@@ -46,4 +46,13 @@ actor {
 
   };
 
+  // SNS generic function validation method for burn_sneed_tokens 
+  public query func validate_burn_sneed_tokens(amount_e8s : T.Balance) : async T.ValidationResult {
+
+      // Enforce amount range.
+      if (amount_e8s <= 1000 or amount_e8s >= 1_000_000_000_000) return #Err("Amount must be greater than fee (1000) and smaller than total supply (1000000000000).");
+      
+      #Ok("amount: " # debug_show(amount_e8s));
+  };
+
 };

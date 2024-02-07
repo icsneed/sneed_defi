@@ -1,3 +1,4 @@
+import Error "mo:base/Error";
 import Int "mo:base/Int";
 import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
@@ -40,4 +41,9 @@ type TransferArgs = {
     fee : ?Balance;
     memo : ?Blob;
     created_at_time : ?Nat64;
+};
+
+type ValidationResult = {
+    #Ok: Text;
+    #Err :Text;
 };

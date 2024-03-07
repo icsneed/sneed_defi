@@ -1,5 +1,4 @@
 import Error "mo:base/Error";
-import Int "mo:base/Int";
 import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
 import Blob "mo:base/Blob";

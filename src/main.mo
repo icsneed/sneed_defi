@@ -1,58 +1,74 @@
+import Nat8 "mo:base/Nat8";
+import Blob "mo:base/Blob";
+import Array "mo:base/Array";
 import Principal "mo:base/Principal";
+import Debug "mo:base/Debug";
 
 import T "Types";
 
 actor {
 
-  // The Sneed SNS governance canister principal
-  let sneed_governance_canister_id = Principal.fromText("fi3zi-fyaaa-aaaaq-aachq-cai");
+  // Send the specified amount of ICRC1 tokens.   
+  public shared ({ caller }) func send_icrc1_tokens(
+    amount_e8s : T.Balance,                 // amount to be sent.
+    icrc1_ledger_canister_id : Principal,   // the Principal id of the ledger canister of the icrc1 token to be sent.
+    to_account : T.Account,                 // the account that the icrc1 token should be sent to 
+    fee : ?T.Balance,                       // the expected fee (set to null when sending to burn account!)
+    memo : ?Blob)                           // an optional memo to send with the icrc1 transfer transaction
+    : async T.TransferResult {
 
-  // The "Sneed DAO" token SNS ledger canister. 
-  let sneed_ledger_canister = actor ("hvgxa-wqaaa-aaaaq-aacia-cai") : actor {
-    icrc1_transfer(args : T.TransferArgs) : async T.TransferResult;
-  };  
+      let from_subaccount = Blob.fromArray(PrincipalToSubaccount(caller));
 
-  // Burn the specified amount of SNS "Sneed DAO" tokens. 
-  // The amount specified must be equal to or smaller than the available 
-  // amount of "Sneed DAO" tokens that have been sent to this canister. 
-  public shared ({ caller }) func burn_sneed_tokens(amount_e8s : T.Balance) : async T.TransferResult {
-
-      // This function may only be called via a DAO proposal to call this generic function.
-      assert caller == sneed_governance_canister_id;
-
-      // The burn account that we will send to (which is the Sneed SNS governance canister)
-      let account : T.Account = {
-        owner = sneed_governance_canister_id;
-        subaccount = null;
-      };
-
-      // Create the arguments for the transaction request.
-      // A burn is constructed as a transfer request to the 
-      // minting/burn account (the SNS goverance canister)
-      // and should NOT include any expected fee in the "fee"
-      // field (since burns do not use up any fee). 
       let transfer_args : T.TransferArgs = {
-        from_subaccount = null;
-        to = account;
+        from_subaccount = ?from_subaccount;
+        to = to_account;
         amount = amount_e8s;
-        fee = null;
-        memo = null;
+        fee = fee;
+        memo = memo;
 
         created_at_time = null;
       };
 
-      // burn the token by transferring it to the sns minting/burning account (the sns governance canister)
-      await sneed_ledger_canister.icrc1_transfer(transfer_args);
+      let icrc1_ledger_canister = actor (Principal.toText(icrc1_ledger_canister_id)) : actor {
+        icrc1_transfer(args : T.TransferArgs) : async T.TransferResult;
+      };  
+
+      await icrc1_ledger_canister.icrc1_transfer(transfer_args);
 
   };
 
-  // SNS generic function validation method for burn_sneed_tokens 
-  public query func validate_burn_sneed_tokens(amount_e8s : T.Balance) : async T.ValidationResult {
+  // SNS generic function validation method for send_icrc1_tokens 
+  public query func validate_send_icrc1_tokens(
+    amount_e8s : T.Balance,                 
+    icrc1_ledger_canister_id : Principal,   
+    to_account : T.Account,                  
+    fee : ?T.Balance,                       
+    memo : ?Blob) : async T.ValidationResult {
 
-      // Enforce amount range.
-      if (amount_e8s <= 1000 or amount_e8s >= 1_000_000_000_000) return #Err("Amount must be greater than fee (1000) and smaller than total supply (1000000000000).");
-      
-      #Ok("amount: " # debug_show(amount_e8s));
+      let msg:Text = "
+      amount: " # debug_show(amount_e8s) # " 
+      icrc1_ledger_canister_id: " # Principal.toText(icrc1_ledger_canister_id) # " 
+      to_account: " # debug_show(to_account) # " 
+      fee: " # debug_show(fee) # " 
+      memo: " # debug_show(memo) # " 
+      ";
+
+      #Ok(msg);
+
   };
 
+  private func PrincipalToSubaccount(p : Principal) : [Nat8] {
+      let a = Array.init<Nat8>(32, 0);
+      let pa = Principal.toBlob(p);
+      a[0] := Nat8.fromNat(pa.size());
+
+      var pos = 1;
+      for (x in pa.vals()) {
+              a[pos] := x;
+              pos := pos + 1;
+          };
+
+      Array.freeze(a);
+  };
+ 
 };

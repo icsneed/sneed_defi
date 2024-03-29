@@ -45,13 +45,11 @@ actor {
     fee : ?T.Balance,                       
     memo : ?Blob) : async T.ValidationResult {
 
-      let msg:Text = "
-      amount: " # debug_show(amount_e8s) # " 
-      icrc1_ledger_canister_id: " # Principal.toText(icrc1_ledger_canister_id) # " 
-      to_account: " # debug_show(to_account) # " 
-      fee: " # debug_show(fee) # " 
-      memo: " # debug_show(memo) # " 
-      ";
+      let msg:Text = "amount: " # debug_show(amount_e8s) #  
+      ", icrc1_ledger_canister_id: " # Principal.toText(icrc1_ledger_canister_id) # 
+      ", to_account: " # debug_show(to_account) #  
+      ", fee: " # debug_show(fee) #  
+      ", memo: " # debug_show(memo);
 
       #Ok(msg);
 

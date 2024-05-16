@@ -549,10 +549,22 @@ shared (deployer) actor class SNEEDFi() = this {
   };
 
   // SNS generic function validation method for swap_withdrawl 
-  public query(msg) func validate_manage_icpswap() : async T.ValidationResult {
+  public query(msg) func validate_manage_icpswap(request : ManageICPSwapRequest) : async T.ValidationResult {
       if(msg.caller != snsGovernance) Debug.trap("Only the govenrnace canister can call manage_icpswap.");
-
-      let validate_message: Text = "The canister will withdraw all fees to the Dapp sub-account";
+      let validate_message: Text = switch(request){
+        case(#WithdrawFees(request)){
+          "The canister will withdraw fees from the ICPSwap pool using the following token canisters: " # debug_show(request);
+        };
+        case(#WithdrawPosition(request)){
+          "The canister will withdraw positions from the ICPSwap pool using the following token canisters: " # debug_show(request);
+        };
+        case(#CreatePosition(request)){
+          "The canister will create a new position in the ICPSwap pool using the following token canisters and amounts: " # debug_show(request);
+        };
+        case(#Swap(request)){
+          "The canister will swap tokens in the ICPSwap pool using the following token canisters and amounts: " # debug_show(request);
+        };
+      };
       #Ok(validate_message);
   };
 

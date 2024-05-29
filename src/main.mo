@@ -608,7 +608,7 @@ shared (deployer) actor class SNEEDFi() = this {
   };
 
   // SNS generic function validation method for swap_withdrawl 
-  public query(msg) func validate_update_icpswap_factory(new_canister: Principal) : async T.ValidationResult {
+  public query(msg) func validate_update_icpswap_factory(new_canister: Text) : async T.ValidationResult {
       if(msg.caller != snsGovernance) return #Err("Only the govenrnace canister can call validate_update_icpswap_factory.");
 
       let validate_message: Text = "The icpswap canister will be updated to " # debug_show(new_canister);

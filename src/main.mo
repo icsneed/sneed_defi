@@ -24,7 +24,12 @@ shared (deployer) actor class SNEEDFi() = this {
   //after upgrade, set this to Principal.fromText("fi3zi-fyaaa-aaaaq-aachq-cai");
 
   //when ready for production, set this to 4mmnk-kiaaa-aaaag-qbllq-cai
-  stable var ICPSwapFactoryPrincipal = "ososz-6iaaa-aaaag-ak5ua-cai";
+  stable var ICPSwapFactoryPrincipal = if(deployer.caller == Principal.fromText("fi3zi-fyaaa-aaaaq-aachq-cai")){
+   "4mmnk-kiaaa-aaaag-qbllq-cai";
+  } else {
+    "ososz-6iaaa-aaaag-ak5ua-cai";
+  };
+
 
   func dappCanister() : Principal {
     Principal.fromActor(this);

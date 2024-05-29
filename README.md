@@ -7,10 +7,15 @@ Sneed Governance: fi3zi-fyaaa-aaaaq-aachq-cai
 
 SNEED ICP pool: osyzs-xiaaa-aaaag-qc76q-cai
 
+ICPSwap Test Pool factory: ososz-6iaaa-aaaag-ak5ua-cai
+ICPSwap Prod Pool factory: 4mmnk-kiaaa-aaaag-qbllq-cai
+
 
 Mif: iczfn-iiaaa-aaaan-qltcq-cai
 
 MiH ICP pool: lna2y-fyaaa-aaaag-qdc4q-cai
+
+If deploying a testing canister, the intial ICP swap factory will be set to test net. You will need to manually update it from the admin account by calling update_icpswap_factory.
 
 
 Todo:

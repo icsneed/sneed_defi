@@ -23,6 +23,9 @@ shared (deployer) actor class SNEEDFi() = this {
   };
   //after upgrade, set this to Principal.fromText("fi3zi-fyaaa-aaaaq-aachq-cai");
 
+  //when ready for production, set this to 4mmnk-kiaaa-aaaag-qbllq-cai
+  stable var ICPSwapFactoryPrincipal = "ososz-6iaaa-aaaag-ak5ua-cai";
+
   func dappCanister() : Principal {
     Principal.fromActor(this);
   };
@@ -63,6 +66,7 @@ shared (deployer) actor class SNEEDFi() = this {
     {
       snsGovernance = snsGovernance;
       dappCanister = dappCanister();
+      ICPSwapFactoryPrincipal = ICPSwapFactoryPrincipal;
     };
   };
 
@@ -166,6 +170,8 @@ shared (deployer) actor class SNEEDFi() = this {
       };
   };
 
+  
+
 
   // withdraw fees to the canister   
   private func swap_fee_withdraw(caller: Principal, request : SwapFeeWithdrawRequest)
@@ -175,7 +181,7 @@ shared (deployer) actor class SNEEDFi() = this {
 
       let results = Buffer.Buffer<(ST.WithdrawResult, ST.WithdrawResult)>(1);
 
-      let swapService : ST.PoolService = actor("");
+      let swapService : ST.PoolService = actor(ICPSwapFactoryPrincipal);
 
       let #ok(pools) = await swapService.getPools() else return #err("swap service is offline");
 
@@ -259,7 +265,7 @@ shared (deployer) actor class SNEEDFi() = this {
 
       let results = Buffer.Buffer<(ST.WithdrawResult, ST.WithdrawResult)>(1);
 
-      let swapService : ST.PoolService = actor("");
+      let swapService : ST.PoolService = actor(ICPSwapFactoryPrincipal);
 
       let #ok(pools) = await swapService.getPools() else return #err("swap service is offline");
 
@@ -347,7 +353,7 @@ shared (deployer) actor class SNEEDFi() = this {
 
       let results = Buffer.Buffer<(ST.WithdrawResult, ST.WithdrawResult)>(1);
 
-      let swapService : ST.PoolService = actor("");
+      let swapService : ST.PoolService = actor(ICPSwapFactoryPrincipal);
 
       let #ok(pools) = await swapService.getPools() else return #err("swap service is offline");
 
@@ -454,7 +460,7 @@ shared (deployer) actor class SNEEDFi() = this {
 
       let results = Buffer.Buffer<(ST.WithdrawResult, ST.WithdrawResult)>(1);
 
-      let swapService : ST.PoolService = actor("");
+      let swapService : ST.PoolService = actor(ICPSwapFactoryPrincipal);
 
       let #ok(pools) = await swapService.getPools() else return #err("swap service is offline");
 
@@ -592,6 +598,20 @@ shared (deployer) actor class SNEEDFi() = this {
       if(msg.caller != snsGovernance) return #Err("Only the govenrnace canister can call update_sns_governance.");
 
       let validate_message: Text = "The sns governance canister will be updated to " # debug_show(new_canister);
+      #Ok(validate_message);
+  };
+
+  public shared(msg) func update_icpswap_factory(new_canister: Text): async (){
+    if(msg.caller != snsGovernance) Debug.trap("Only the govenrnace canister can call update_sns_governance.");
+
+    ICPSwapFactoryPrincipal := new_canister;
+  };
+
+  // SNS generic function validation method for swap_withdrawl 
+  public query(msg) func validate_update_icpswap_factory(new_canister: Principal) : async T.ValidationResult {
+      if(msg.caller != snsGovernance) return #Err("Only the govenrnace canister can call validate_update_icpswap_factory.");
+
+      let validate_message: Text = "The icpswap canister will be updated to " # debug_show(new_canister);
       #Ok(validate_message);
   };
 

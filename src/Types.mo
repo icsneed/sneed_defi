@@ -3,6 +3,7 @@ import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
 import Blob "mo:base/Blob";
 import Principal "mo:base/Principal";
+import Bool "mo:base/Bool";
 
 type Timestamp = Nat64;
 type Subaccount = Blob;
@@ -46,3 +47,22 @@ type ValidationResult = {
     #Ok: Text;
     #Err :Text;
 };
+
+type TransferICPSwapLPResult = {
+    #Ok: Bool;
+    #Err: TransferICPSwapLPError;
+};
+
+type TransferICPSwapLPArgs = {
+    from : Principal;
+    to : Principal;
+    positionId : Nat;
+};
+
+type TransferICPSwapLPError = {
+    #CommonError;
+    #InternalError: Text;
+    #UnsupportedToken: Text;
+    #InsufficientFunds;
+};
+

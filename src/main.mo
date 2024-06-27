@@ -55,6 +55,46 @@ actor {
 
   };
 
+  // Transfer an ICPSwap LP position owned by this canister.   
+  public shared ({ caller }) func transfer_icpswap_lp_position(
+    lp_canister_id : Principal,             // the Principal id of the canister of the ICPSwap LP to transfer.
+    to_principal : Principal,               // the Principal id to transfer the LP to. 
+    position_id : Nat)                      // the Position id of the LP to transfer 
+    : async T.TransferICPSwapLPResult {
+
+      // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
+      assert Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai"; 
+
+      let from = Principal.fromText("ok64y-uiaaa-aaaag-qdcbq-cai"); // this canister
+
+      let transfer_args : T.TransferICPSwapLPArgs = {
+        from = from;
+        to = to_principal;
+        positionId = position_id;
+      };
+
+      let lp_canister = actor (Principal.toText(lp_canister_id)) : actor {
+        transferPosition(args : T.TransferICPSwapLPArgs) : async T.TransferICPSwapLPResult;
+      };  
+
+      await lp_canister.transferPosition(transfer_args);
+
+  };
+
+  // SNS generic function validation method for transfer_icpswap_lp_position 
+  public query func validate_transfer_icpswap_lp_position(
+    lp_canister_id : Principal,
+    to_principal : Principal,
+    position_id : Nat) : async T.ValidationResult {
+
+      let msg:Text = "lp_canister_id: " # Principal.toText(lp_canister_id) # 
+      ", to_principal: " # Principal.toText(to_principal) #  
+      ", position_id: " # debug_show(position_id);
+
+      #Ok(msg);
+
+  };
+
   private func PrincipalToSubaccount(p : Principal) : [Nat8] {
       let a = Array.init<Nat8>(32, 0);
       let pa = Principal.toBlob(p);

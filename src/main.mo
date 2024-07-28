@@ -67,17 +67,11 @@ actor {
 
       let from = Principal.fromText("ok64y-uiaaa-aaaag-qdcbq-cai"); // this canister
 
-      let transfer_args : T.TransferICPSwapLPArgs = {
-        from = from;
-        to = to_principal;
-        positionId = position_id;
-      };
-
       let lp_canister = actor (Principal.toText(lp_canister_id)) : actor {
-        transferPosition(args : T.TransferICPSwapLPArgs) : async T.TransferICPSwapLPResult;
+        transferPosition(from: Principal, to: Principal, positionId: Nat) : async T.TransferICPSwapLPResult;
       };  
 
-      await lp_canister.transferPosition(transfer_args);
+      await lp_canister.transferPosition(from, to_principal, position_id);
 
   };
 

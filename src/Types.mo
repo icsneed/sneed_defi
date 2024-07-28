@@ -53,12 +53,6 @@ type TransferICPSwapLPResult = {
     #Err: TransferICPSwapLPError;
 };
 
-type TransferICPSwapLPArgs = {
-    from : Principal;
-    to : Principal;
-    positionId : Nat;
-};
-
 type TransferICPSwapLPError = {
     #CommonError;
     #InternalError: Text;

@@ -55,6 +55,59 @@ actor {
 
   };
 
+  // Send the specified amount of ICRC1 tokens.   
+  public shared ({ caller }) func deploy_icrc1_tokens_to_icpswap(
+    amount_e8s : T.Balance,                 // amount to be deployed.
+    icrc1_ledger_canister_id : Principal,   // the Principal id of the ledger canister of the icrc1 token to be deployed.
+    to_swap_canister_id : Principal)        // the Principal id of the ICPSwap swap canister that the icrc1 token should be deployed to 
+    : async T.TransferResult {
+
+      // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
+      assert Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai"; 
+
+      // Deploy to an account with a subaccount generated from the Sneed DAO governance canister id.
+      let to_subaccount = Blob.fromArray(PrincipalToSubaccount(caller));
+
+      // Deploy to an account using the swap canister id as "owner" and the subaccount generated
+      // from the Sneed DAO governance canister id.
+      let to_account : T.Account = {
+        owner = to_swap_canister_id;
+        subaccount = ?to_subaccount;
+      };
+
+      let transfer_args : T.TransferArgs = {
+        from_subaccount = null;
+        to = to_account;
+        amount = amount_e8s;
+        fee = null;
+        memo = null;
+
+        created_at_time = null;
+      };
+
+      let icrc1_ledger_canister = actor (Principal.toText(icrc1_ledger_canister_id)) : actor {
+        icrc1_transfer(args : T.TransferArgs) : async T.TransferResult;
+      };  
+
+      await icrc1_ledger_canister.icrc1_transfer(transfer_args);
+
+  };
+
+  // SNS generic function validation method for deploy_icrc1_tokens_to_icpswap 
+  public shared func validate_deploy_icrc1_tokens_to_icpswap(
+    amount_e8s : T.Balance,                 // amount to be deployed.
+    icrc1_ledger_canister_id : Principal,   // the Principal id of the ledger canister of the icrc1 token to be deployed.
+    to_swap_canister_id : Principal)        // the Principal id of the ICPSwap swap canister that the icrc1 token should be deployed to 
+    : async T.ValidationResult {
+
+      let msg:Text = "amount: " # debug_show(amount_e8s) #  
+      ", icrc1_ledger_canister_id: " # Principal.toText(icrc1_ledger_canister_id) # 
+      ", to_swap_canister_id: " # Principal.toText(to_swap_canister_id);
+      
+      #Ok(msg);
+
+  };
+
   // Transfer an ICPSwap LP position owned by this canister.   
   public shared ({ caller }) func transfer_icpswap_lp_position(
     lp_canister_id : Principal,             // the Principal id of the canister of the ICPSwap LP to transfer.

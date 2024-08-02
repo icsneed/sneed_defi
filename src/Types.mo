@@ -2,6 +2,7 @@ import Error "mo:base/Error";
 import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
 import Blob "mo:base/Blob";
+import Buffer "mo:base/Buffer";
 import Principal "mo:base/Principal";
 import Bool "mo:base/Bool";
 
@@ -9,6 +10,8 @@ type Timestamp = Nat64;
 type Subaccount = Blob;
 type TxIndex = Nat;
 type Balance = Nat;
+
+type Log = Buffer.Buffer<Text>;
 
 type Account = {
     owner : Principal;
@@ -49,8 +52,8 @@ type ValidationResult = {
 };
 
 type TransferICPSwapLPResult = {
-    #Ok: Bool;
-    #Err: TransferICPSwapLPError;
+    #ok: Bool;
+    #err: TransferICPSwapLPError;
 };
 
 type TransferICPSwapLPError = {

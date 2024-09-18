@@ -63,3 +63,8 @@ type TransferICPSwapLPError = {
     #InsufficientFunds;
 };
 
+type TransferICPexLPResult = {
+    #Ok;
+    #Err :Text;
+};
+

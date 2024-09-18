@@ -286,7 +286,88 @@ actor {
       #Ok(msg);
 
   };
-  
+
+  // Transfer an ICPSwap LP position owned by this canister.
+  // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
+  public shared ({ caller }) func transfer_icpex_lp_position(
+    lp_canister_id : Principal,             // the Principal id of the canister of the ICPSwap LP to transfer.
+    to_principal : Principal)               // the Principal id to transfer the LP to. 
+    : async T.TransferICPexLPResult {
+
+      log_msg("transfer_icpex_lp_position called by " # 
+        Principal.toText(caller) # 
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) # 
+        ", to_principal: " # Principal.toText(to_principal));
+
+      try {
+
+        // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
+        let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
+        
+        if (Principal.toText(caller) == sneed_governance_id) {
+
+          let icpex_proxy_id = Principal.fromText("2ackz-dyaaa-aaaam-ab5eq-cai");
+
+          let lp_canister = actor (Principal.toText(icpex_proxy_id)) : actor {
+            transferLiquidity(pool_addr: Principal, to: Principal, transfer_percent: Nat) : async T.TransferICPexLPResult;
+          };  
+
+          let transfer_percent : Nat = 100_0000_0000_0000_0000; // 100%, using 18 decimals of precision
+
+          log_msg("transfer_icpex_lp_position, calling transferLiquidity of " # 
+            Principal.toText(icpex_proxy_id) # 
+            " with arguments: " #
+            "pool_addr: " # Principal.toText(lp_canister_id) # 
+            ", to: " # Principal.toText(to_principal) #  
+            ", transfer_percent: " # debug_show(transfer_percent));
+
+          let result = await lp_canister.transferLiquidity(lp_canister_id, to_principal, transfer_percent);
+
+          log_msg("transfer_icpex_lp_position, called transferLiquidity of " # 
+            Principal.toText(icpex_proxy_id) # 
+            " with result: " # debug_show(result));
+
+          result;
+
+        } else {
+
+          let err_msg = "transfer_icpex_lp_position ERROR: May only be called by " # 
+            sneed_governance_id # " (Was called by " # Principal.toText(caller) # ")";
+
+          log_msg(err_msg);
+
+          return #Err(err_msg);
+
+        };
+
+      } catch e {
+      
+        let err_msg = "transfer_icpex_lp_position ERROR: " # Error.message(e);
+
+        log_msg(err_msg);
+
+        return #Err(err_msg);
+
+      };
+
+  };
+
+  // SNS generic function validation method for transfer_icpswap_lp_position 
+  public query ({ caller }) func validate_transfer_icpex_lp_position(
+    lp_canister_id : Principal,
+    to_principal : Principal) : async T.ValidationResult {
+
+      let msg:Text = "lp_canister_id: " # Principal.toText(lp_canister_id) # 
+      ", to_principal: " # Principal.toText(to_principal);
+
+      log_msg("validate_transfer_icpex_lp_position called by " # 
+        Principal.toText(caller) # " with arguments: " # msg);
+      
+      #Ok(msg);
+
+  };
+
   // Clear log
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
   public shared ({ caller }) func clear_log() : async () { 

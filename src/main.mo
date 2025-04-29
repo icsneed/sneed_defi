@@ -387,6 +387,19 @@ actor {
 
   };
 
+  // SNS generic function validation method for claim_fees_sonic_lp_position 
+  public query ({ caller }) func validate_claim_fees_sonic_lp_position(
+    position_id : Nat) : async T.ValidationResult {
+
+      let msg:Text = "position_id: " # debug_show(position_id);
+
+      log_msg("validate_claim_fees_sonic_lp_position called by " # 
+        Principal.toText(caller) # " with arguments: " # msg);
+      
+      #Ok(msg);
+
+  };
+
   // Transfer an ICPSwap LP position owned by this canister.
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
   public shared ({ caller }) func transfer_icpex_lp_position(

@@ -387,9 +387,9 @@ actor {
 
   };
 
-  // SNS generic function validation method for claim_fees_sonic_lp_position 
-  public query ({ caller }) func validate_claim_fees_sonic_lp_position(
-    position_id : Nat) : async T.ValidationResult {
+  // SNS generic function validation method for claim_fees_lp_position 
+  public query ({ caller }) func validate_claim_fees_lp_position(
+    { position_id : Nat }) : async T.ValidationResult {
 
       let msg:Text = "position_id: " # debug_show(position_id);
 
@@ -397,7 +397,6 @@ actor {
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);
-
   };
 
   // Transfer an ICPSwap LP position owned by this canister.

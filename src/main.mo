@@ -11,6 +11,7 @@ import Error "mo:base/Error";
 import Debug "mo:base/Debug";
 
 import T "Types";
+import Pool "poolTypes";
 
 actor {
 
@@ -387,13 +388,34 @@ actor {
 
   };
 
-  // SNS generic function validation method for claim_fees_lp_position 
-  public query ({ caller }) func validate_claim_fees_lp_position(
-    { position_id : Nat }) : async T.ValidationResult {
+  // SNS generic function validation method for LP management 
+  public query ({ caller }) func validate_claim_fees_lp_position(claimArgs: Pool.ClaimArgs) : async T.ValidationResult {
 
-      let msg:Text = "position_id: " # debug_show(position_id);
+      let msg:Text = "positionId: " # debug_show(claimArgs.positionId);
 
       log_msg("validate_claim_fees_sonic_lp_position called by " # 
+        Principal.toText(caller) # " with arguments: " # msg);
+      
+      #Ok(msg);
+  };
+  public query ({ caller }) func validate_decrease_liquidity_lp_position(decreaseLiquidityArgs: Pool.DecreaseLiquidityArgs) : async T.ValidationResult {
+
+      let msg:Text = "positionId: " # debug_show(decreaseLiquidityArgs.positionId) #
+        ", liquidity: " # debug_show(decreaseLiquidityArgs.liquidity);
+
+      log_msg("validate_decrease_liquidity_lp_position called by " # 
+        Principal.toText(caller) # " with arguments: " # msg);
+      
+      #Ok(msg);
+  };
+  public query ({ caller }) func validate_withdraw_lp_position(withdrawArgs: Pool.WithdrawArgs) : async T.ValidationResult {
+
+      let msg:Text = 
+        "token: " # debug_show(withdrawArgs.token) #
+        ", fee: " # debug_show(withdrawArgs.fee) #
+        ", amount: " # debug_show(withdrawArgs.amount);
+
+      log_msg("validate_withdraw_lp_position called by " # 
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);

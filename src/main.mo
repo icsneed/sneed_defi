@@ -408,14 +408,14 @@ actor {
       
       #Ok(msg);
   };
-  public query ({ caller }) func validate_withdraw_sonic_lp_position(withdrawArgs: Pool.SonicWithdrawArgs) : async T.ValidationResult {
+  public query ({ caller }) func validate_withdraw_sonic_lp(withdrawArgs: Pool.SonicWithdrawArgs) : async T.ValidationResult {
 
       let msg:Text = 
         "token: " # debug_show(withdrawArgs.token) #
         ", fee: " # debug_show(withdrawArgs.fee) #
         ", amount: " # debug_show(withdrawArgs.amount);
 
-      log_msg("validate_withdraw_sonic_lp_position called by " # 
+      log_msg("validate_withdraw_sonic_lp called by " # 
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);

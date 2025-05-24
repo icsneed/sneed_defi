@@ -1,4 +1,11 @@
 module {
+    public type SonicClaimArgs = ClaimArgs;
+    public type SonicDecreaseLiquidityArgs = DecreaseLiquidityArgs;
+    public type SonicWithdrawArgs = WithdrawArgs;
+    
+    public type ICPSwapClaimArgs = ClaimArgs;
+    public type ICPSwapWithdrawArgs = WithdrawArgs;
+
     public type ClaimArgs = {
         positionId: Nat;
     };

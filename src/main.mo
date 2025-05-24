@@ -389,7 +389,7 @@ actor {
   };
 
   // SNS generic function validation method for LP management 
-  public query ({ caller }) func validate_claim_fees_lp_position(claimArgs: Pool.ClaimArgs) : async T.ValidationResult {
+  public query ({ caller }) func validate_claim_fees_sonic_lp_position(claimArgs: Pool.SonicClaimArgs) : async T.ValidationResult {
 
       let msg:Text = "positionId: " # debug_show(claimArgs.positionId);
 
@@ -398,24 +398,24 @@ actor {
       
       #Ok(msg);
   };
-  public query ({ caller }) func validate_decrease_liquidity_lp_position(decreaseLiquidityArgs: Pool.DecreaseLiquidityArgs) : async T.ValidationResult {
+  public query ({ caller }) func validate_decrease_liquidity_sonic_lp_position(decreaseLiquidityArgs: Pool.SonicDecreaseLiquidityArgs) : async T.ValidationResult {
 
       let msg:Text = "positionId: " # debug_show(decreaseLiquidityArgs.positionId) #
         ", liquidity: " # debug_show(decreaseLiquidityArgs.liquidity);
 
-      log_msg("validate_decrease_liquidity_lp_position called by " # 
+      log_msg("validate_decrease_liquidity_sonic_lp_position called by " # 
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);
   };
-  public query ({ caller }) func validate_withdraw_lp_position(withdrawArgs: Pool.WithdrawArgs) : async T.ValidationResult {
+  public query ({ caller }) func validate_withdraw_sonic_lp_position(withdrawArgs: Pool.SonicWithdrawArgs) : async T.ValidationResult {
 
       let msg:Text = 
         "token: " # debug_show(withdrawArgs.token) #
         ", fee: " # debug_show(withdrawArgs.fee) #
         ", amount: " # debug_show(withdrawArgs.amount);
 
-      log_msg("validate_withdraw_lp_position called by " # 
+      log_msg("validate_withdraw_sonic_lp_position called by " # 
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);

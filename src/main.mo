@@ -13,13 +13,27 @@ import Debug "mo:base/Debug";
 import T "Types";
 import Pool "poolTypes";
 
-actor {
+persistent actor {
 
   // Log messages (stable)
-  stable var stable_log : [Text] = [];
+  var stable_log : [Text] = [];
 
-  // Log messages  
-  var log : T.Log = Buffer.fromArray<Text>(stable_log);
+  // Log messages
+  transient var log : T.Log = Buffer.fromArray<Text>(stable_log);
+
+  // Principals permitted to drive the Sonic recovery operations.
+  // These methods can only move funds from Sonic into this canister; they
+  // cannot send tokens to the caller. Sonic's withdraw always credits the
+  // calling canister, so recovered funds land on this canister, where the
+  // governance-only deploy_icrc1_tokens controls them.
+  transient let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
+  transient let sonic_operator_id = "tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe";
+  transient let sneed_defi_id = "ok64y-uiaaa-aaaag-qdcbq-cai";
+
+  private func is_sonic_operator(caller : Principal) : Bool {
+    let c = Principal.toText(caller);
+    c == sneed_governance_id or c == sonic_operator_id;
+  };
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).
   // Can only be called by the Sneed DAO governance canister (via approved proposal)!
@@ -43,7 +57,6 @@ actor {
       try {
 
         // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-        let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
 
         if (Principal.toText(caller) == sneed_governance_id) {
 
@@ -222,11 +235,8 @@ actor {
       try {
 
         // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-        let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
 
         if (Principal.toText(caller) == sneed_governance_id) {
-
-          let sneed_defi_id = "ok64y-uiaaa-aaaag-qdcbq-cai";
 
           // Deploy to an account with a subaccount generated from the Sneed DAO DeFi canister id.
           let to_subaccount = Blob.fromArray(PrincipalToSubaccount(Principal.fromText(sneed_defi_id)));
@@ -323,7 +333,6 @@ actor {
       try {
 
         // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-        let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
         
         if (Principal.toText(caller) == sneed_governance_id) {
 
@@ -437,7 +446,6 @@ actor {
       try {
 
         // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-        let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
         
         if (Principal.toText(caller) == sneed_governance_id) {
 

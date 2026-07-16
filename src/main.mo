@@ -1,4 +1,5 @@
 import Int "mo:base/Int";
+import Nat "mo:base/Nat";
 import Nat8 "mo:base/Nat8";
 import Nat64 "mo:base/Nat64";
 import Blob "mo:base/Blob";
@@ -428,6 +429,268 @@ persistent actor {
         Principal.toText(caller) # " with arguments: " # msg);
       
       #Ok(msg);
+  };
+
+  // SNS generic function validation method for the Sonic transferPosition call.
+  // The target of that generic function is the Sonic pool canister itself; this
+  // canister only validates. The argument order must match Sonic's
+  // transferPosition(from, to, positionId).
+  public query ({ caller }) func validate_transfer_sonic_lp_position(
+    from : Principal,
+    to : Principal,
+    position_id : Nat) : async T.ValidationResult {
+
+      let msg : Text = "from: " # Principal.toText(from) #
+        ", to: " # Principal.toText(to) #
+        ", position_id: " # debug_show(position_id);
+
+      log_msg("validate_transfer_sonic_lp_position called by " #
+        Principal.toText(caller) # " with arguments: " # msg);
+
+      #Ok(msg);
+  };
+
+  // Claim (collect) accumulated fees for a Sonic LP position owned by this canister.
+  // Credits this canister's unused balance inside the Sonic pool.
+  public shared ({ caller }) func sonic_claim_position_fees(
+    lp_canister_id : Principal,
+    position_id : Nat)
+    : async Pool.SonicAmountsResult {
+
+      log_msg("sonic_claim_position_fees called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", position_id: " # debug_show(position_id));
+
+      if (not is_sonic_operator(caller)) {
+        let err_msg = "sonic_claim_position_fees ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.SonicPool = actor (Principal.toText(lp_canister_id));
+
+        let result = await lp_canister.claim({ positionId = position_id });
+
+        log_msg("sonic_claim_position_fees, called claim of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "sonic_claim_position_fees ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
+  // Decrease (remove) liquidity from a Sonic LP position owned by this canister.
+  // Credits this canister's unused balance inside the Sonic pool.
+  // Pass the position's full liquidity to withdraw from it completely.
+  public shared ({ caller }) func sonic_decrease_liquidity(
+    lp_canister_id : Principal,
+    position_id : Nat,
+    liquidity : Text)
+    : async Pool.SonicAmountsResult {
+
+      log_msg("sonic_decrease_liquidity called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", position_id: " # debug_show(position_id) #
+        ", liquidity: " # liquidity);
+
+      if (not is_sonic_operator(caller)) {
+        let err_msg = "sonic_decrease_liquidity ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.SonicPool = actor (Principal.toText(lp_canister_id));
+
+        let result = await lp_canister.decreaseLiquidity({
+          positionId = position_id;
+          liquidity = liquidity;
+        });
+
+        log_msg("sonic_decrease_liquidity, called decreaseLiquidity of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "sonic_decrease_liquidity ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
+  // Withdraw an exact amount of a token from this canister's unused balance in
+  // a Sonic pool. Sonic credits the calling canister, so funds land here.
+  public shared ({ caller }) func sonic_withdraw(
+    lp_canister_id : Principal,
+    token : Text,
+    fee : Nat,
+    amount : Nat)
+    : async Pool.SonicNatResult {
+
+      log_msg("sonic_withdraw called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", token: " # token #
+        ", fee: " # debug_show(fee) #
+        ", amount: " # debug_show(amount));
+
+      if (not is_sonic_operator(caller)) {
+        let err_msg = "sonic_withdraw ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.SonicPool = actor (Principal.toText(lp_canister_id));
+
+        let result = await lp_canister.withdraw({
+          token = token;
+          fee = fee;
+          amount = amount;
+        });
+
+        log_msg("sonic_withdraw, called withdraw of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "sonic_withdraw ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
+  // Withdraw as much of a token as is currently possible: the lesser of what
+  // this canister is owed and what the pool actually holds. The Sonic pool
+  // holds less than it owes, so an exact-amount withdraw of the full claim
+  // fails; this takes whatever is available and can be re-run as reserves
+  // return. Which of the pool's two tokens is requested is resolved by
+  // matching the address from metadata, never by assuming an order.
+  public shared ({ caller }) func sonic_withdraw_max(
+    lp_canister_id : Principal,
+    token : Text,
+    fee : Nat)
+    : async Pool.SonicNatResult {
+
+      log_msg("sonic_withdraw_max called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", token: " # token #
+        ", fee: " # debug_show(fee));
+
+      if (not is_sonic_operator(caller)) {
+        let err_msg = "sonic_withdraw_max ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.SonicPool = actor (Principal.toText(lp_canister_id));
+        let self = Principal.fromText(sneed_defi_id);
+
+        let meta = await lp_canister.metadata();
+        let is_token0 = switch (meta) {
+          case (#ok(m)) {
+            if (m.token0.address == token) { true }
+            else if (m.token1.address == token) { false }
+            else {
+              let err_msg = "sonic_withdraw_max ERROR: token " # token #
+                " is not in pool " # Principal.toText(lp_canister_id);
+              log_msg(err_msg);
+              return #err(#UnsupportedToken(token));
+            };
+          };
+          case (#err(e)) {
+            let err_msg = "sonic_withdraw_max ERROR: metadata failed: " # debug_show(e);
+            log_msg(err_msg);
+            return #err(e);
+          };
+        };
+
+        // What this canister is owed.
+        let unused = await lp_canister.getUserUnusedBalance(self);
+        let owed = switch (unused) {
+          case (#ok(b)) { if (is_token0) { b.balance0 } else { b.balance1 } };
+          case (#err(e)) {
+            let err_msg = "sonic_withdraw_max ERROR: getUserUnusedBalance failed: " # debug_show(e);
+            log_msg(err_msg);
+            return #err(e);
+          };
+        };
+
+        // What the pool actually holds.
+        let held_balance = await lp_canister.getTokenBalance();
+        let held = if (is_token0) { held_balance.token0 } else { held_balance.token1 };
+
+        let amount = Nat.min(owed, held);
+
+        log_msg("sonic_withdraw_max, token: " # token #
+          ", is_token0: " # debug_show(is_token0) #
+          ", owed: " # debug_show(owed) #
+          ", held: " # debug_show(held) #
+          ", withdrawing: " # debug_show(amount));
+
+        // A withdrawal at or below the ledger fee nets nothing.
+        if (amount <= fee) {
+          let err_msg = "sonic_withdraw_max ERROR: available amount " #
+            debug_show(amount) # " does not exceed fee " # debug_show(fee);
+          log_msg(err_msg);
+          return #err(#InsufficientFunds);
+        };
+
+        let result = await lp_canister.withdraw({
+          token = token;
+          fee = fee;
+          amount = amount;
+        });
+
+        log_msg("sonic_withdraw_max, called withdraw of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "sonic_withdraw_max ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
   };
 
   // Transfer an ICPSwap LP position owned by this canister.

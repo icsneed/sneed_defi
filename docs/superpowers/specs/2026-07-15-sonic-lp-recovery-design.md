@@ -8,6 +8,8 @@
 
 Position 2 in the Sonic SNEED/ICP pool is owned by the Sneed DAO governance canister. We transfer it to ok64 via a single governance proposal, then perform all remaining operations (claim, decrease liquidity, withdraw) by direct calls to ok64 from an authorized operator PID — no further proposals.
 
+In parallel, and on the same timeline, we sweep the 40.70 ICP already stranded in Sonic under the governance principal straight into the SNS ICP treasury, using the generic function the DAO has *already registered*. Four proposals total, two waves, ~8 days.
+
 **A critical finding reframes the outcome: the Sonic pool is insolvent.** It cannot honour the full claim. This design recovers what the pool actually holds and leaves the remainder as an open claim.
 
 ## Live state (verified on-chain 2026-07-15)
@@ -50,9 +52,17 @@ This is already causing live failures. `getTransferLogs` shows principal `abgpi-
 
 ### Correction to the prior diagnosis
 
-The earlier theory was that governance's ICP withdraw "landed somewhere unusable." The evidence suggests it more likely never completed — 40.70 ICP still sits in `fi3zi`'s Sonic unused balance today. The design is unaffected: routing funds to ok64 is correct regardless, because ok64's default subaccount is reachable by the existing governance-only `deploy_icrc1_tokens` (which uses `from_subaccount = null`), whereas ICP landing on `fi3zi` has no ordinary lever.
+The earlier theory was that governance's ICP withdraw "landed somewhere unusable." **This is disproven.** Two pieces of evidence:
 
-## Proposal plan — 3 proposals, 2 waves (~8 days)
+1. The withdraw never completed. 40.70 ICP still sits in `fi3zi`'s Sonic unused balance today (`balance1 = 4_069_574_490`), so nothing ever landed anywhere.
+2. Had it completed, the destination would have been fine. Sonic's `withdraw` credits `{owner = caller, subaccount = null}` (confirmed in `getTransferLogs`: `to = <caller>`, `fromSubaccount = null`). For `fi3zi` that is the **SNS ICP treasury**, which currently holds **7,379.58 ICP** and is spendable by the native `TransferSnsTreasuryFunds` proposal (function id 9).
+
+Consequences:
+
+- The 40.70 ICP is safe to sweep with governance as the caller. It lands in the DAO treasury. This is now **P3**, not deferred work.
+- Routing the *position* proceeds to ok64 regardless. Not because `fi3zi` is a bad destination, but because only ok64 can operate a position it owns, and ok64's default subaccount is reachable by the existing governance-only `deploy_icrc1_tokens` (`from_subaccount = null`).
+
+## Proposal plan — 4 proposals, 2 waves (~8 days)
 
 The binding constraint: Sonic's `transferPosition` requires the caller to be the owner, so only `fi3zi` can move position 2; governance can only call an external canister through a registered generic function; and an `Execute` proposal cannot reference an unregistered function. `Add` → `Execute` is therefore an irreducible 2-wave chain at 4 days per wave (`initial_voting_period_seconds = 345_600`). The upgrade rides in parallel and does not extend the critical path.
 
@@ -67,9 +77,26 @@ The binding constraint: Sonic's `transferPosition` requires the caller to be the
 
 Parallel-safe: `AddGenericNervousSystemFunction` registers a name and does not verify the target/validator method exists. If P2 executes before P1, the function is merely unusable until P1 lands; it is only invoked in wave 2.
 
+**P3 — ExecuteGenericNervousSystemFunction `withdraw_sonic` (function id 3_004)** — sweeps the stranded 40.70 ICP into the SNS ICP treasury.
+
+Payload (`WithdrawArgs`):
+
+```candid
+record { token = "ryjl3-tyaaa-aaaaa-aaaba-cai"; fee = 10_000 : nat; amount = 4_069_574_490 : nat }
+```
+
+Requires **no upgrade and no new function** — 3_004 is already registered (target `ni6i4` method `withdraw`, validator `ok64` method `validate_withdraw_sonic_lp`), so this is submittable on day 0. Fully independent of P1/P2/P4: governance's Sonic unused balance is keyed by principal and is unaffected by transferring the position. The pool holds 1,877.05 ICP, so it can cover this comfortably.
+
+Two caveats:
+
+- `amount` must be **exact and ≤ the unused balance**. Re-verify `getUserUnusedBalance(fi3zi)` immediately before submitting; if it has changed, update the payload.
+- Do **not** claim position 2's fees before the transfer — that would credit `fi3zi` and invalidate this amount. The runbook claims *after* the transfer, as ok64.
+
+The 1,000 SNEED dust (`balance0`) is deliberately left. With a ledger fee of 1,000 the withdrawal nets zero, so it does not justify a proposal.
+
 ### Wave 2 (day ~4)
 
-**P3 — ExecuteGenericNervousSystemFunction** `transfer_sonic_lp_position` with `(from = fi3zi-fyaaa-aaaaq-aachq-cai, to = ok64y-uiaaa-aaaag-qdcbq-cai, positionId = 2)`.
+**P4 — ExecuteGenericNervousSystemFunction** `transfer_sonic_lp_position` with `(from = fi3zi-fyaaa-aaaaq-aachq-cai, to = ok64y-uiaaa-aaaag-qdcbq-cai, positionId = 2)`.
 
 ### Rejected alternatives
 
@@ -150,7 +177,7 @@ await lp.withdraw({ token; fee; amount });
 
 Note `getTokenBalance` is an update method on Sonic; `getUserUnusedBalance` is a query but is invoked as a replicated call from a canister. Both are awaited normally.
 
-## Runbook after P3 (no proposals)
+## Runbook after P4 (no proposals)
 
 Executed by the operator PID against ok64. `lp = ni6i4-cqaaa-aaaak-qtsbq-cai`.
 
@@ -175,11 +202,12 @@ Expected recovery: **~1,877 ICP of ~4,891, and ~5.5 SNEED of ~125** — subject 
 | `decreaseLiquidity` converts a fee-earning position into a non-earning claim against an insolvent pool | Accepted: fees on an insolvent pool are not collectable either. |
 | P2 executes before P1 | Harmless; function unusable until P1 lands, only invoked in wave 2. |
 | P1 passes, P2 fails | Dangling unused methods on ok64; re-submit P2. |
+| P3's `amount` goes stale before execution | Re-verify `getUserUnusedBalance(fi3zi)` before submitting. Do not claim position 2 fees before the transfer, which would credit `fi3zi` and invalidate the amount. |
 | Recovered funds sit on ok64 | By design. Governance moves them later via the existing `deploy_icrc1_tokens` (function 3_001). |
 
 ## Out of scope
 
-- **The 40.70 ICP + 1,000 SNEED dust stranded in Sonic under `fi3zi`.** It will not move with the position; only governance can retrieve it, via the already-registered `withdraw_sonic` (3_004). Deferred to a separate effort. Note it would likely succeed today, since the pool still holds 1,877 ICP.
+- **The 1,000 SNEED dust** stranded under `fi3zi`. Withdrawing it nets zero against the 1,000 ledger fee.
 - Investigating where the ~3,132 ICP went, and any Sonic-team remediation.
 - Redeploying the recovered funds (ICPSwap position, treasury, RLL distribution).
 
@@ -189,4 +217,5 @@ Expected recovery: **~1,877 ICP of ~4,891, and ~5.5 SNEED of ~125** — subject 
 2. Position 2 liquidity = 0.
 3. All reserves the pool can pay are on ok64's ledger accounts.
 4. Any residue remains a recorded claim under ok64's Sonic unused balance.
-5. Achieved with exactly 3 proposals.
+5. `getUserUnusedBalance(fi3zi).balance1` = 0, with ~40.69 ICP net of fee added to the SNS ICP treasury.
+6. Achieved with exactly 4 proposals.

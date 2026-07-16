@@ -1,0 +1,22 @@
+{
+  "//": "Test-only project. Kept separate from the root dfx.json so the mock pool can never be deployed to a real network by `dfx deploy --network=ic`.",
+  "canisters": {
+    "sneed_defi": {
+      "main": "../src/main.mo",
+      "type": "motoko",
+      "args": "--enhanced-orthogonal-persistence"
+    },
+    "sonic_mock": {
+      "main": "sonic_mock.mo",
+      "type": "motoko",
+      "args": "--enhanced-orthogonal-persistence"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "version": 1
+}

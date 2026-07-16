@@ -13,6 +13,9 @@
 # generated files
 src/declarations/
 
+# generated proposal arguments (regenerate with scripts/make_proposal_args.py)
+proposal_args/
+
 # rust
 target/
 

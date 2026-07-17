@@ -22,3 +22,6 @@ dist/
 
 # environment variables
 .env
+
+# notes
+notes/

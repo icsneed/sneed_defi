@@ -2,7 +2,8 @@
   "canisters": {
     "sneed_defi": {
       "main": "src/main.mo",
-      "type": "motoko"
+      "type": "motoko",
+      "args": "--enhanced-orthogonal-persistence"
     }
   },
   "defaults": {

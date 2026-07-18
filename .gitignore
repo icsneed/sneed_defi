@@ -16,6 +16,9 @@ src/declarations/
 # generated proposal arguments (regenerate with scripts/make_proposal_args.py)
 proposal_args/
 
+# python bytecode cache
+__pycache__/
+
 # rust
 target/
 

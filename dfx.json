@@ -3,7 +3,7 @@
     "sneed_defi": {
       "main": "src/main.mo",
       "type": "motoko",
-      "args": "--enhanced-orthogonal-persistence"
+      "args": "--legacy-persistence"
     }
   },
   "defaults": {

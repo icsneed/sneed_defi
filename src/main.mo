@@ -338,7 +338,7 @@ persistent actor {
         
         if (Principal.toText(caller) == sneed_governance_id) {
 
-          let from = Principal.fromText("ok64y-uiaaa-aaaag-qdcbq-cai"); // this canister
+          let from = Principal.fromText(sneed_defi_id); // this canister
 
           let lp_canister = actor (Principal.toText(lp_canister_id)) : actor {
             transferPosition(from: Principal, to: Principal, positionId: Nat) : async T.TransferICPSwapLPResult;
@@ -797,7 +797,7 @@ persistent actor {
         ", controllers_to_add: " # debug_show(controllers_to_add));
 
       // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-      assert (Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai" or Principal.toText(caller) == "ok64y-uiaaa-aaaag-qdcbq-cai");
+      assert (Principal.toText(caller) == sneed_governance_id or Principal.toText(caller) == sneed_defi_id);
 
       let ic : actor {
         canister_status : ({ canister_id : Principal }) -> async {
@@ -864,7 +864,7 @@ persistent actor {
   public shared ({ caller }) func clear_log() : async () {
     
     // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-    assert Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai";
+    assert Principal.toText(caller) == sneed_governance_id;
 
     log.clear(); 
     

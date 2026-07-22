@@ -18,9 +18,6 @@
 /.icp/data/mappings/*
 !/.icp/data/mappings/ic.ids.json
 
-# icp-cli local state in the test project (nothing to keep)
-test/.icp/
-
 # generated proposal arguments (regenerate with scripts/make_proposal_args.py)
 proposal_args/
 

@@ -53,7 +53,7 @@ pass "unauthorized withdraw_max rejected"
 # Confirm the rejection was a real gate, not an incidental failure:
 # the mock must never have been called.
 OUT=$(icp canister call sonic_mock last_withdraw "()")
-echo "$OUT" | norm | grep -q "0 : nat" || fail "mock was called despite rejection: $OUT"
+echo "$OUT" | grep -q "(0 : nat)" || fail "mock was called despite rejection: $OUT"
 pass "no unauthorized call reached the pool"
 echo
 

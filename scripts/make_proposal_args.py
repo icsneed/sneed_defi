@@ -6,6 +6,7 @@ command line, so the argument is written to a file and passed to
 `icp canister call` with --args-file.
 
 Usage:
+    NEURON_ID="<64 hex chars: your neuron's 32-byte subaccount>" \
     TITLE="Upgrade Sneed DeFi canister" \
     SUMMARY="What this deploy changes and why." \
     python3 scripts/make_proposal_args.py [--reinstall]
@@ -25,14 +26,12 @@ import pathlib
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-WASM = REPO / ".dfx" / "ic" / "canisters" / "sneed_defi" / "sneed_defi.wasm"
+WASM = REPO / ".icp" / "cache" / "artifacts" / "sneed_defi"
 OUT = REPO / "proposal_args"
 
-# The operator's neuron, controlled by tv3bj-a6dzs-...-6qe.
-NEURON_ID = (
-    r"\b8\ae\a5\33\37\14\02\07\6b\65\55\75\9f\b4\23\6e"
-    r"\cc\a1\65\50\8d\e0\57\f5\ec\dc\63\43\e0\6d\df\43"
-)
+# The proposing neuron's subaccount (its 32-byte "neuron id") is supplied at
+# runtime via the NEURON_ID environment variable as 64 hex characters, so a
+# fresh clone can use this script with its own neuron.
 
 SNEED_DEFI = "ok64y-uiaaa-aaaag-qdcbq-cai"
 
@@ -56,10 +55,10 @@ def candid_text(text: str) -> str:
     return f'"{escaped}"'
 
 
-def proposal(title: str, summary: str, action: str) -> str:
+def proposal(subaccount: str, title: str, summary: str, action: str) -> str:
     return f"""(
   record {{
-    subaccount = blob "{NEURON_ID}";
+    subaccount = {subaccount};
     command = opt variant {{
       MakeProposal = record {{
         title = {candid_text(title)};
@@ -99,9 +98,30 @@ def main() -> int:
         )
         return 1
 
+    neuron_hex = os.environ.get("NEURON_ID", "").strip().lower()
+    if not neuron_hex:
+        print("error: NEURON_ID environment variable must be set", file=sys.stderr)
+        print(
+            'Example: NEURON_ID=b8aea533...df43 TITLE="Upgrade ..." '
+            'SUMMARY="..." python3 scripts/make_proposal_args.py',
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        neuron_bytes = bytes.fromhex(neuron_hex)
+    except ValueError:
+        print(f"error: NEURON_ID must be hex characters, got: {neuron_hex!r}", file=sys.stderr)
+        return 1
+    if len(neuron_bytes) != 32:
+        print(
+            f"error: NEURON_ID must be 32 bytes (64 hex chars), got {len(neuron_bytes)} bytes",
+            file=sys.stderr,
+        )
+        return 1
+
     if not WASM.exists():
         print(f"error: wasm not found at {WASM}", file=sys.stderr)
-        print("Run: dfx build --network ic sneed_defi", file=sys.stderr)
+        print("Run: icp build sneed_defi", file=sys.stderr)
         return 1
 
     wasm_bytes = WASM.read_bytes()
@@ -121,7 +141,7 @@ def main() -> int:
           }}"""
 
     out_file = OUT / f"deploy_{mode_name}.did"
-    out_file.write_text(proposal(title, full_summary, action))
+    out_file.write_text(proposal(candid_blob(neuron_bytes), title, full_summary, action))
 
     print(f"wasm:        {WASM}")
     print(f"wasm sha256: {wasm_hash}")

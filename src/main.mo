@@ -1,15 +1,14 @@
-import Int "mo:base/Int";
-import Nat "mo:base/Nat";
-import Nat8 "mo:base/Nat8";
-import Nat64 "mo:base/Nat64";
-import Blob "mo:base/Blob";
-import Array "mo:base/Array";
-import Buffer "mo:base/Buffer";
-import Text "mo:base/Text";
-import Time "mo:base/Time";
-import Principal "mo:base/Principal";
-import Error "mo:base/Error";
-import Debug "mo:base/Debug";
+import Int "mo:core/Int";
+import Nat "mo:core/Nat";
+import Nat8 "mo:core/Nat8";
+import Nat64 "mo:core/Nat64";
+import Blob "mo:core/Blob";
+import Array "mo:core/Array";
+import VarArray "mo:core/VarArray";
+import List "mo:core/List";
+import Time "mo:core/Time";
+import Principal "mo:core/Principal";
+import Error "mo:core/Error";
 
 import T "Types";
 import Pool "poolTypes";
@@ -20,7 +19,7 @@ persistent actor {
   var stable_log : [Text] = [];
 
   // Log messages
-  transient var log : T.Log = Buffer.fromArray<Text>(stable_log);
+  transient var log : T.Log = List.fromArray<Text>(stable_log);
 
   // Safety admins are trusted principals permitted to drive recovery-style
   // operations (e.g. pulling funds out of Sonic back into this canister).
@@ -818,16 +817,16 @@ persistent actor {
 
       // Read the existing controller set so we ADD to it rather than replace it.
       let status = await ic.canister_status({ canister_id = canister_id });
-      let merged = Buffer.fromArray<Principal>(status.settings.controllers);
+      let merged = List.fromArray<Principal>(status.settings.controllers);
 
       // Append each requested controller that is not already present.
       for (c in controllers_to_add.vals()) {
-        if (not Buffer.contains<Principal>(merged, c, Principal.equal)) {
-          merged.add(c);
+        if (not List.contains<Principal>(merged, Principal.equal, c)) {
+          List.add(merged, c);
         };
       };
 
-      let new_controllers = Buffer.toArray(merged);
+      let new_controllers = List.toArray(merged);
 
       await ic.update_settings({
         canister_id = canister_id;
@@ -868,19 +867,19 @@ persistent actor {
     // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
     assert Principal.toText(caller) == sneed_governance_id;
 
-    log.clear(); 
+    List.clear(log);
     
   };
 
   // Returns the number of items in the log.
-  public query func get_log_size() : async Nat { log.size(); };
+  public query func get_log_size() : async Nat { List.size(log); };
 
   // Returns a given set of entries from the log, given a start item index and a length. 
   // Maximum number of items (length) is 100.  
   public query func get_log_entries(start : Nat, length : Nat) : async [Text] {
     
     let max_len = 100;
-    let size = log.size();
+    let size = List.size(log);
 
     if (size < 1) { return []; };
 
@@ -897,16 +896,13 @@ persistent actor {
       };
     };
 
-    let pre = Buffer.prefix(log, chk_start + chk_len);
-    let page = Buffer.suffix(pre, chk_len);
-
-    Buffer.toArray(page);
+    List.sliceToArray(log, chk_start, chk_start + chk_len);
 
   };
 
   // Generate subaccount from Principal
   private func PrincipalToSubaccount(p : Principal) : [Nat8] {
-      let a = Array.init<Nat8>(32, 0);
+      let a = VarArray.repeat<Nat8>(0, 32);
       let pa = Principal.toBlob(p);
       a[0] := Nat8.fromNat(pa.size());
 
@@ -916,13 +912,13 @@ persistent actor {
               pos := pos + 1;
           };
 
-      Array.freeze(a);
+      Array.fromVarArray(a);
   };
 
   // Add a message to the log  
   private func log_msg(msg : Text) {
     let time = Nat64.toText(Nat64.fromNat(Int.abs(Time.now()))); 
-    log.add(time # ": " # msg);
+    List.add(log, time # ": " # msg);
   };
 
  
@@ -932,7 +928,7 @@ persistent actor {
 
     // Move transient state into persistent state before upgrading the canister,
     // stashing it away so it survives the canister upgrade.
-    stable_log := Buffer.toArray(log);
+    stable_log := List.toArray(log);
 
   };
 

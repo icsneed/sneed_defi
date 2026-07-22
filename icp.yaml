@@ -1,0 +1,4 @@
+canisters:
+  - name: sneed_defi
+    recipe:
+      type: "@dfinity/motoko@v5.0.0"

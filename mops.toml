@@ -1,0 +1,9 @@
+[toolchain]
+moc = "1.6.0"
+
+[dependencies]
+core = "2.5.0"
+
+[canisters.sneed_defi]
+main = "src/main.mo"
+args = ["--legacy-persistence"]

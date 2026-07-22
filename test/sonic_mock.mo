@@ -1,4 +1,4 @@
-import Principal "mo:base/Principal";
+import Principal "mo:core/Principal";
 
 // Local stand-in for the Sonic swap pool (ni6i4-cqaaa-aaaak-qtsbq-cai).
 // Deliberately models the real pool's insolvency: the internal accounting

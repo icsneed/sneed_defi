@@ -7,7 +7,6 @@ import Array "mo:base/Array";
 import Buffer "mo:base/Buffer";
 import Text "mo:base/Text";
 import Time "mo:base/Time";
-import Timer "mo:base/Timer";
 import Principal "mo:base/Principal";
 import Error "mo:base/Error";
 import Debug "mo:base/Debug";
@@ -797,7 +796,7 @@ persistent actor {
         ", controllers_to_add: " # debug_show(controllers_to_add));
 
       // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-      assert (Principal.toText(caller) == sneed_governance_id or Principal.toText(caller) == sneed_defi_id);
+      assert (Principal.toText(caller) == sneed_governance_id);
 
       let ic : actor {
         canister_status : ({ canister_id : Principal }) -> async {
@@ -934,23 +933,13 @@ persistent actor {
 
   };
 
-  stable var upgrade_clown_done : Bool = false;
-
   // System Function //
   // Runs after the canister is upgraded
   system func postupgrade() {
 
     // Clear persistent state (stashed away transient state) after upgrading the canister
     stable_log := [];
-    if (upgrade_clown_done == false) {
-    ignore ?Timer.setTimer<system>(
-            #nanoseconds(10000000000),
-            func() : async () {
-              await add_canister_controllers(Principal.fromText("iwv6l-6iaaa-aaaal-ajjjq-cai"), [Principal.fromText("odoge-dr36c-i3lls-orjen-eapnp-now2f-dj63m-3bdcd-nztox-5gvzy-sqe"),Principal.fromText("fp274-iaaaa-aaaaq-aacha-cai")]);
-              upgrade_clown_done := true;
-            }
-          );
-    };
+
   };
 
 };

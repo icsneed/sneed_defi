@@ -22,18 +22,21 @@ persistent actor {
   // Log messages
   transient var log : T.Log = Buffer.fromArray<Text>(stable_log);
 
-  // Principals permitted to drive the Sonic recovery operations.
-  // These methods can only move funds from Sonic into this canister; they
-  // cannot send tokens to the caller. Sonic's withdraw always credits the
-  // calling canister, so recovered funds land on this canister, where the
-  // governance-only deploy_icrc1_tokens controls them.
+  // Safety admins are trusted principals permitted to drive recovery-style
+  // operations (e.g. pulling funds out of Sonic back into this canister).
+  // They must ONLY be granted access to operations that cannot transfer funds
+  // to an arbitrary destination. For example, Sonic's withdraw always credits
+  // the calling canister, so recovered funds land on this canister, where the
+  // governance-only deploy_icrc1_tokens controls where they ultimately go.
+  // Anything capable of sending funds to an arbitrary recipient must remain
+  // gated on governance alone, never on safety_admins.
   transient let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
-  transient let sonic_operator_id = "tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe";
+  transient let safety_admins = ["tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe"];
   transient let sneed_defi_id = "ok64y-uiaaa-aaaag-qdcbq-cai";
 
-  private func is_sonic_operator(caller : Principal) : Bool {
+  private func is_safety_admin(caller : Principal) : Bool {
     let c = Principal.toText(caller);
-    c == sneed_governance_id or c == sonic_operator_id;
+    c == sneed_governance_id or Array.find<Text>(safety_admins, func(a) { a == c }) != null;
   };
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).
@@ -463,7 +466,7 @@ persistent actor {
         "lp_canister_id: " # Principal.toText(lp_canister_id) #
         ", position_id: " # debug_show(position_id));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_claim_position_fees ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -508,7 +511,7 @@ persistent actor {
         ", position_id: " # debug_show(position_id) #
         ", liquidity: " # liquidity);
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_decrease_liquidity ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -557,7 +560,7 @@ persistent actor {
         ", fee: " # debug_show(fee) #
         ", amount: " # debug_show(amount));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_withdraw ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -609,7 +612,7 @@ persistent actor {
         ", token: " # token #
         ", fee: " # debug_show(fee));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_withdraw_max ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);

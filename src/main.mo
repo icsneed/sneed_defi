@@ -910,6 +910,167 @@ persistent actor {
 
   };
 
+  // Emergency: pull as many tokens as possible out of an ICPSwap position owned
+  // by this canister and back onto this canister, in one best-effort call.
+  // Sequences claim -> decreaseLiquidity(full) -> withdraw(min(owed, held)) for
+  // both tokens. A failure in any step is recorded in `errors` and the call still
+  // proceeds to withdraw whatever unused balance exists; it is safe to re-run as
+  // pool reserves return. ICPSwap credits the calling canister, so funds land here.
+  // Hard stops (unauthorized, metadata unavailable) return #err; every other
+  // outcome returns #ok(summary), including partial recovery.
+  public shared ({ caller }) func emergency_pull_icpswap_lp(
+    lp_canister_id : Principal,
+    position_id : Nat)
+    : async T.EmergencyPullResult {
+
+      log_msg("emergency_pull_icpswap_lp called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", position_id: " # debug_show(position_id));
+
+      if (not is_safety_admin(caller)) {
+        let err_msg = "emergency_pull_icpswap_lp ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(err_msg);
+      };
+
+      let lp_canister : Pool.ICPSwapPool = actor (Principal.toText(lp_canister_id));
+      let self = Principal.fromText(sneed_defi_id);
+      let errors = List.empty<Text>();
+
+      // 1. Pool metadata -> token addresses. Hard stop: without these we cannot withdraw.
+      let meta : Pool.ICPSwapMetadataResult =
+        try { await lp_canister.metadata() }
+        catch e { #err(#InternalError(Error.message(e))) };
+      let (token0, token1) = switch (meta) {
+        case (#ok(m)) { (m.token0.address, m.token1.address) };
+        case (#err(e)) {
+          let err_msg = "emergency_pull_icpswap_lp ERROR: metadata failed: " # debug_show(e);
+          log_msg(err_msg);
+          return #err(err_msg);
+        };
+      };
+
+      // 2. Ledger fees per token (best-effort). A token with an unreadable fee is skipped in step 6.
+      let ledger0 = actor (token0) : actor { icrc1_fee : () -> async Nat };
+      let ledger1 = actor (token1) : actor { icrc1_fee : () -> async Nat };
+      let fee0 : ?Nat =
+        try { ?(await ledger0.icrc1_fee()) }
+        catch e { List.add(errors, "icrc1_fee(token0) failed: " # Error.message(e)); null };
+      let fee1 : ?Nat =
+        try { ?(await ledger1.icrc1_fee()) }
+        catch e { List.add(errors, "icrc1_fee(token1) failed: " # Error.message(e)); null };
+
+      // 3. Claim fees (best-effort).
+      var claimed0 : Nat = 0;
+      var claimed1 : Nat = 0;
+      let claim_res : Pool.ICPSwapAmountsResult =
+        try { await lp_canister.claim({ positionId = position_id }) }
+        catch e { #err(#InternalError(Error.message(e))) };
+      switch (claim_res) {
+        case (#ok(a)) { claimed0 := a.amount0; claimed1 := a.amount1 };
+        case (#err(e)) { List.add(errors, "claim failed: " # debug_show(e)) };
+      };
+
+      // 4. Remove all liquidity (best-effort). Skip when already zero (supports re-runs).
+      var liquidity_removed : Nat = 0;
+      var decreased0 : Nat = 0;
+      var decreased1 : Nat = 0;
+      let pos_res : Pool.ICPSwapUserPositionResult =
+        try { await lp_canister.getUserPosition(position_id) }
+        catch e { #err(#InternalError(Error.message(e))) };
+      switch (pos_res) {
+        case (#ok(p)) {
+          if (p.liquidity > 0) {
+            liquidity_removed := p.liquidity;
+            let dec_res : Pool.ICPSwapAmountsResult =
+              try {
+                await lp_canister.decreaseLiquidity({
+                  positionId = position_id;
+                  liquidity = Nat.toText(p.liquidity);
+                })
+              } catch e { #err(#InternalError(Error.message(e))) };
+            switch (dec_res) {
+              case (#ok(a)) { decreased0 := a.amount0; decreased1 := a.amount1 };
+              case (#err(e)) { List.add(errors, "decreaseLiquidity failed: " # debug_show(e)) };
+            };
+          };
+        };
+        case (#err(e)) { List.add(errors, "getUserPosition failed: " # debug_show(e)) };
+      };
+
+      // 5. Read pool reserves and this canister's unused balance to cap the withdraws.
+      let held : ?Pool.ICPSwapTokenBalance =
+        try { ?(await lp_canister.getTokenBalance()) }
+        catch e { List.add(errors, "getTokenBalance failed: " # Error.message(e)); null };
+      let unused : Pool.ICPSwapUnusedBalanceResult =
+        try { await lp_canister.getUserUnusedBalance(self) }
+        catch e { #err(#InternalError(Error.message(e))) };
+      let owed : ?Pool.ICPSwapUnusedBalance = switch (unused) {
+        case (#ok(b)) { ?b };
+        case (#err(e)) { List.add(errors, "getUserUnusedBalance failed: " # debug_show(e)); null };
+      };
+
+      // 6. Withdraw min(owed, held) for each token (best-effort, independent).
+      var withdrawn0 : Nat = 0;
+      var withdrawn1 : Nat = 0;
+      switch (held, owed) {
+        case (?h, ?b) {
+          switch (fee0) {
+            case (?f0) {
+              let amt0 = Nat.min(b.balance0, h.token0);
+              if (amt0 > f0) {
+                let w0 : Pool.ICPSwapNatResult =
+                  try { await lp_canister.withdraw({ token = token0; fee = f0; amount = amt0 }) }
+                  catch e { #err(#InternalError(Error.message(e))) };
+                switch (w0) {
+                  case (#ok(n)) { withdrawn0 := n };
+                  case (#err(e)) { List.add(errors, "withdraw(token0) failed: " # debug_show(e)) };
+                };
+              };
+            };
+            case null {};
+          };
+          switch (fee1) {
+            case (?f1) {
+              let amt1 = Nat.min(b.balance1, h.token1);
+              if (amt1 > f1) {
+                let w1 : Pool.ICPSwapNatResult =
+                  try { await lp_canister.withdraw({ token = token1; fee = f1; amount = amt1 }) }
+                  catch e { #err(#InternalError(Error.message(e))) };
+                switch (w1) {
+                  case (#ok(n)) { withdrawn1 := n };
+                  case (#err(e)) { List.add(errors, "withdraw(token1) failed: " # debug_show(e)) };
+                };
+              };
+            };
+            case null {};
+          };
+        };
+        case (_, _) {}; // reserves or unused balance unavailable; withdraws skipped, errors already recorded
+      };
+
+      let summary : T.EmergencyPullSummary = {
+        token0 = token0;
+        token1 = token1;
+        claimed0 = claimed0;
+        claimed1 = claimed1;
+        liquidity_removed = liquidity_removed;
+        decreased0 = decreased0;
+        decreased1 = decreased1;
+        withdrawn0 = withdrawn0;
+        withdrawn1 = withdrawn1;
+        errors = List.toArray(errors);
+      };
+
+      log_msg("emergency_pull_icpswap_lp completed: " # debug_show(summary));
+
+      #ok(summary);
+
+  };
+
   // Transfer an ICPSwap LP position owned by this canister.
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
   public shared ({ caller }) func transfer_icpex_lp_position(

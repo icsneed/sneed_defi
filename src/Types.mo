@@ -62,3 +62,21 @@ type TransferICPexLPResult = {
     #Err :Text;
 };
 
+type EmergencyPullSummary = {
+    token0 : Text;
+    token1 : Text;
+    claimed0 : Nat;
+    claimed1 : Nat;
+    liquidity_removed : Nat;
+    decreased0 : Nat;
+    decreased1 : Nat;
+    withdrawn0 : Nat;
+    withdrawn1 : Nat;
+    errors : [Text];
+};
+
+type EmergencyPullResult = {
+    #ok : EmergencyPullSummary;
+    #err : Text;
+};
+

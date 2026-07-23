@@ -62,3 +62,68 @@ type TransferICPexLPResult = {
     #Err :Text;
 };
 
+type EmergencyPullSummary = {
+    token0 : Text;
+    token1 : Text;
+    claimed0 : Nat;
+    claimed1 : Nat;
+    liquidity_removed : Nat;
+    decreased0 : Nat;
+    decreased1 : Nat;
+    withdrawn0 : Nat;
+    withdrawn1 : Nat;
+    errors : [Text];
+};
+
+type EmergencyPullResult = {
+    #ok : EmergencyPullSummary;
+    #err : Text;
+};
+
+// Minimal ICRC1 ledger interface: read the fee, snapshot a balance, and
+// forward a transfer. Used by the LP fee harvester to route claimed fees.
+type ICRC1Ledger = actor {
+    icrc1_fee : () -> async Balance;
+    icrc1_balance_of : (Account) -> async Balance;
+    icrc1_transfer : (TransferArgs) -> async TransferResult;
+};
+
+// A liquidity position enrolled in automatic fee harvesting, identified by
+// its pool (swap canister) and the ICPSwap position id within that pool.
+type ClaimPosition = {
+    pool : Principal;
+    position_id : Nat;
+};
+
+// Result of one harvest cycle. Logged and returned so operators can see
+// exactly what moved. `errors` lists per-step failures; empty when clean.
+//
+// Because ICPSwap's withdraw settles out of band, withdrawing and forwarding
+// are decoupled: a cycle first forwards what earlier cycles withdrew (now
+// settled), then withdraws this cycle's fees into the forward queue. The
+// `pending_*` counters carry the queue between cycles (and across upgrades).
+type HarvestSummary = {
+    positions_seen : Nat;         // enrolled positions considered this cycle
+    positions_harvested : Nat;    // positions where at least one token was withdrawn
+    withdrawn_icp : Nat;          // net ICP added to the forward queue this cycle
+    withdrawn_sneed : Nat;        // net SNEED added to the forward queue this cycle
+    forwarded_icp : Nat;          // ICP sent to the ICP vector this cycle (net of fee)
+    forwarded_sneed : Nat;        // SNEED sent to the SNEED vector this cycle (net of fee)
+    pending_icp : Nat;            // ICP still queued for forwarding after this cycle
+    pending_sneed : Nat;          // SNEED still queued for forwarding after this cycle
+    icp_forward_tx : ?TxIndex;    // ledger tx index of the ICP forward, if it happened
+    sneed_forward_tx : ?TxIndex;  // ledger tx index of the SNEED forward, if it happened
+    errors : [Text];
+};
+
+// Read-only view of the current harvest schedule, forward queue and positions.
+type ClaimConfigView = {
+    active : Bool;
+    cadence_seconds : Nat;
+    min_icp : Balance;
+    min_sneed : Balance;
+    pending_icp : Balance;        // ICP withdrawn but not yet forwarded
+    pending_sneed : Balance;      // SNEED withdrawn but not yet forwarded
+    positions : [ClaimPosition];
+};
+

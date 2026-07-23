@@ -393,14 +393,35 @@ persistent actor {
       ", to_principal: " # Principal.toText(to_principal) #  
       ", position_id: " # debug_show(position_id);
 
-      log_msg("validate_transfer_icpswap_lp_position called by " # 
+      log_msg("validate_transfer_icpswap_lp_position called by " #
         Principal.toText(caller) # " with arguments: " # msg);
-      
+
       #Ok(msg);
 
   };
 
-  // SNS generic function validation method for LP management 
+  // SNS generic function validation method for the ICPSwap transferPosition call.
+  // The target of that generic function is the ICPSwap pool canister itself; this
+  // canister only validates. The argument order must match ICPSwap's
+  // transferPosition(from, to, positionId). Use this validator when transferring a
+  // position owned by the Sneed governance canister (from = governance), so that the
+  // SNS governance canister is the caller of transferPosition on the pool.
+  public query ({ caller }) func validate_transfer_icpswap_pool_position(
+    from : Principal,
+    to : Principal,
+    position_id : Nat) : async T.ValidationResult {
+
+      let msg : Text = "from: " # Principal.toText(from) #
+        ", to: " # Principal.toText(to) #
+        ", position_id: " # debug_show(position_id);
+
+      log_msg("validate_transfer_icpswap_pool_position called by " #
+        Principal.toText(caller) # " with arguments: " # msg);
+
+      #Ok(msg);
+  };
+
+  // SNS generic function validation method for LP management
   public query ({ caller }) func validate_claim_fees_sonic_lp_position(claimArgs: Pool.SonicClaimArgs) : async T.ValidationResult {
 
       let msg:Text = "positionId: " # debug_show(claimArgs.positionId);

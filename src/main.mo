@@ -716,6 +716,96 @@ persistent actor {
 
   };
 
+  // Claim (collect) accumulated fees for an ICPSwap LP position owned by this canister.
+  // Credits this canister's unused balance inside the ICPSwap pool.
+  public shared ({ caller }) func icpswap_claim(
+    lp_canister_id : Principal,
+    position_id : Nat)
+    : async Pool.ICPSwapAmountsResult {
+
+      log_msg("icpswap_claim called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", position_id: " # debug_show(position_id));
+
+      if (not is_safety_admin(caller)) {
+        let err_msg = "icpswap_claim ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.ICPSwapPool = actor (Principal.toText(lp_canister_id));
+
+        let result = await lp_canister.claim({ positionId = position_id });
+
+        log_msg("icpswap_claim, called claim of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "icpswap_claim ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
+  // Decrease (remove) liquidity from an ICPSwap LP position owned by this canister.
+  // Credits this canister's unused balance inside the ICPSwap pool.
+  // Pass the position's full liquidity to withdraw from it completely.
+  public shared ({ caller }) func icpswap_decrease_liquidity(
+    lp_canister_id : Principal,
+    position_id : Nat,
+    liquidity : Text)
+    : async Pool.ICPSwapAmountsResult {
+
+      log_msg("icpswap_decrease_liquidity called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", position_id: " # debug_show(position_id) #
+        ", liquidity: " # liquidity);
+
+      if (not is_safety_admin(caller)) {
+        let err_msg = "icpswap_decrease_liquidity ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.ICPSwapPool = actor (Principal.toText(lp_canister_id));
+
+        let result = await lp_canister.decreaseLiquidity({
+          positionId = position_id;
+          liquidity = liquidity;
+        });
+
+        log_msg("icpswap_decrease_liquidity, called decreaseLiquidity of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "icpswap_decrease_liquidity ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
   // Transfer an ICPSwap LP position owned by this canister.
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
   public shared ({ caller }) func transfer_icpex_lp_position(

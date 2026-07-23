@@ -1,17 +1,11 @@
-import Error "mo:base/Error";
-import Nat "mo:base/Nat";
-import Nat64 "mo:base/Nat64";
-import Blob "mo:base/Blob";
-import Buffer "mo:base/Buffer";
-import Principal "mo:base/Principal";
-import Bool "mo:base/Bool";
+import List "mo:core/List";
 
 type Timestamp = Nat64;
 type Subaccount = Blob;
 type TxIndex = Nat;
 type Balance = Nat;
 
-type Log = Buffer.Buffer<Text>;
+type Log = List.List<Text>;
 
 type Account = {
     owner : Principal;

@@ -1,16 +1,14 @@
-import Int "mo:base/Int";
-import Nat "mo:base/Nat";
-import Nat8 "mo:base/Nat8";
-import Nat64 "mo:base/Nat64";
-import Blob "mo:base/Blob";
-import Array "mo:base/Array";
-import Buffer "mo:base/Buffer";
-import Text "mo:base/Text";
-import Time "mo:base/Time";
-import Timer "mo:base/Timer";
-import Principal "mo:base/Principal";
-import Error "mo:base/Error";
-import Debug "mo:base/Debug";
+import Int "mo:core/Int";
+import Nat "mo:core/Nat";
+import Nat8 "mo:core/Nat8";
+import Nat64 "mo:core/Nat64";
+import Blob "mo:core/Blob";
+import Array "mo:core/Array";
+import VarArray "mo:core/VarArray";
+import List "mo:core/List";
+import Time "mo:core/Time";
+import Principal "mo:core/Principal";
+import Error "mo:core/Error";
 
 import T "Types";
 import Pool "poolTypes";
@@ -21,20 +19,23 @@ persistent actor {
   var stable_log : [Text] = [];
 
   // Log messages
-  transient var log : T.Log = Buffer.fromArray<Text>(stable_log);
+  transient var log : T.Log = List.fromArray<Text>(stable_log);
 
-  // Principals permitted to drive the Sonic recovery operations.
-  // These methods can only move funds from Sonic into this canister; they
-  // cannot send tokens to the caller. Sonic's withdraw always credits the
-  // calling canister, so recovered funds land on this canister, where the
-  // governance-only deploy_icrc1_tokens controls them.
+  // Safety admins are trusted principals permitted to drive recovery-style
+  // operations (e.g. pulling funds out of Sonic back into this canister).
+  // They must ONLY be granted access to operations that cannot transfer funds
+  // to an arbitrary destination. For example, Sonic's withdraw always credits
+  // the calling canister, so recovered funds land on this canister, where the
+  // governance-only deploy_icrc1_tokens controls where they ultimately go.
+  // Anything capable of sending funds to an arbitrary recipient must remain
+  // gated on governance alone, never on safety_admins.
   transient let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
-  transient let sonic_operator_id = "tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe";
+  transient let safety_admins = ["tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe"];
   transient let sneed_defi_id = "ok64y-uiaaa-aaaag-qdcbq-cai";
 
-  private func is_sonic_operator(caller : Principal) : Bool {
+  private func is_safety_admin(caller : Principal) : Bool {
     let c = Principal.toText(caller);
-    c == sneed_governance_id or c == sonic_operator_id;
+    c == sneed_governance_id or Array.find<Text>(safety_admins, func(a) { a == c }) != null;
   };
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).
@@ -338,7 +339,7 @@ persistent actor {
         
         if (Principal.toText(caller) == sneed_governance_id) {
 
-          let from = Principal.fromText("ok64y-uiaaa-aaaag-qdcbq-cai"); // this canister
+          let from = Principal.fromText(sneed_defi_id); // this canister
 
           let lp_canister = actor (Principal.toText(lp_canister_id)) : actor {
             transferPosition(from: Principal, to: Principal, positionId: Nat) : async T.TransferICPSwapLPResult;
@@ -464,7 +465,7 @@ persistent actor {
         "lp_canister_id: " # Principal.toText(lp_canister_id) #
         ", position_id: " # debug_show(position_id));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_claim_position_fees ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -509,7 +510,7 @@ persistent actor {
         ", position_id: " # debug_show(position_id) #
         ", liquidity: " # liquidity);
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_decrease_liquidity ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -558,7 +559,7 @@ persistent actor {
         ", fee: " # debug_show(fee) #
         ", amount: " # debug_show(amount));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_withdraw ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -610,7 +611,7 @@ persistent actor {
         ", token: " # token #
         ", fee: " # debug_show(fee));
 
-      if (not is_sonic_operator(caller)) {
+      if (not is_safety_admin(caller)) {
         let err_msg = "sonic_withdraw_max ERROR: Not authorized (Was called by " #
           Principal.toText(caller) # ")";
         log_msg(err_msg);
@@ -797,7 +798,7 @@ persistent actor {
         ", controllers_to_add: " # debug_show(controllers_to_add));
 
       // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-      assert (Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai" or Principal.toText(caller) == "ok64y-uiaaa-aaaag-qdcbq-cai");
+      assert (Principal.toText(caller) == sneed_governance_id);
 
       let ic : actor {
         canister_status : ({ canister_id : Principal }) -> async {
@@ -816,16 +817,16 @@ persistent actor {
 
       // Read the existing controller set so we ADD to it rather than replace it.
       let status = await ic.canister_status({ canister_id = canister_id });
-      let merged = Buffer.fromArray<Principal>(status.settings.controllers);
+      let merged = List.fromArray<Principal>(status.settings.controllers);
 
       // Append each requested controller that is not already present.
       for (c in controllers_to_add.vals()) {
-        if (not Buffer.contains<Principal>(merged, c, Principal.equal)) {
-          merged.add(c);
+        if (not List.contains<Principal>(merged, Principal.equal, c)) {
+          List.add(merged, c);
         };
       };
 
-      let new_controllers = Buffer.toArray(merged);
+      let new_controllers = List.toArray(merged);
 
       await ic.update_settings({
         canister_id = canister_id;
@@ -864,21 +865,21 @@ persistent actor {
   public shared ({ caller }) func clear_log() : async () {
     
     // This method may only be called by the Sneed DAO governance canister (via approved proposal)!
-    assert Principal.toText(caller) == "fi3zi-fyaaa-aaaaq-aachq-cai";
+    assert Principal.toText(caller) == sneed_governance_id;
 
-    log.clear(); 
+    List.clear(log);
     
   };
 
   // Returns the number of items in the log.
-  public query func get_log_size() : async Nat { log.size(); };
+  public query func get_log_size() : async Nat { List.size(log); };
 
   // Returns a given set of entries from the log, given a start item index and a length. 
   // Maximum number of items (length) is 100.  
   public query func get_log_entries(start : Nat, length : Nat) : async [Text] {
     
     let max_len = 100;
-    let size = log.size();
+    let size = List.size(log);
 
     if (size < 1) { return []; };
 
@@ -895,16 +896,13 @@ persistent actor {
       };
     };
 
-    let pre = Buffer.prefix(log, chk_start + chk_len);
-    let page = Buffer.suffix(pre, chk_len);
-
-    Buffer.toArray(page);
+    List.sliceToArray(log, chk_start, chk_start + chk_len);
 
   };
 
   // Generate subaccount from Principal
   private func PrincipalToSubaccount(p : Principal) : [Nat8] {
-      let a = Array.init<Nat8>(32, 0);
+      let a = VarArray.repeat<Nat8>(0, 32);
       let pa = Principal.toBlob(p);
       a[0] := Nat8.fromNat(pa.size());
 
@@ -914,13 +912,13 @@ persistent actor {
               pos := pos + 1;
           };
 
-      Array.freeze(a);
+      Array.fromVarArray(a);
   };
 
   // Add a message to the log  
   private func log_msg(msg : Text) {
     let time = Nat64.toText(Nat64.fromNat(Int.abs(Time.now()))); 
-    log.add(time # ": " # msg);
+    List.add(log, time # ": " # msg);
   };
 
  
@@ -930,11 +928,9 @@ persistent actor {
 
     // Move transient state into persistent state before upgrading the canister,
     // stashing it away so it survives the canister upgrade.
-    stable_log := Buffer.toArray(log);
+    stable_log := List.toArray(log);
 
   };
-
-  stable var upgrade_clown_done : Bool = false;
 
   // System Function //
   // Runs after the canister is upgraded
@@ -942,15 +938,7 @@ persistent actor {
 
     // Clear persistent state (stashed away transient state) after upgrading the canister
     stable_log := [];
-    if (upgrade_clown_done == false) {
-    ignore ?Timer.setTimer<system>(
-            #nanoseconds(10000000000),
-            func() : async () {
-              await add_canister_controllers(Principal.fromText("iwv6l-6iaaa-aaaal-ajjjq-cai"), [Principal.fromText("odoge-dr36c-i3lls-orjen-eapnp-now2f-dj63m-3bdcd-nztox-5gvzy-sqe"),Principal.fromText("fp274-iaaaa-aaaaq-aacha-cai")]);
-              upgrade_clown_done := true;
-            }
-          );
-    };
+
   };
 
 };

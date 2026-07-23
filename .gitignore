@@ -7,11 +7,16 @@
 .DS_Store
 **/.DS_Store
 
-# dfx temporary files
-.dfx/
+# mops packages
+.mops/
 
-# generated files
-src/declarations/
+# icp-cli local state (root) — keep only the mainnet canister id mapping
+/.icp/*
+!/.icp/data
+/.icp/data/*
+!/.icp/data/mappings
+/.icp/data/mappings/*
+!/.icp/data/mappings/ic.ids.json
 
 # generated proposal arguments (regenerate with scripts/make_proposal_args.py)
 proposal_args/
@@ -19,15 +24,6 @@ proposal_args/
 # python bytecode cache
 __pycache__/
 
-# rust
-target/
-
-# frontend code
-node_modules/
-dist/
-
-# environment variables
-.env
-
-# notes
+# planning / working docs (kept local, not committed)
+docs/
 notes/

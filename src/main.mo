@@ -62,6 +62,20 @@ persistent actor {
   // sub-minute cadence buys nothing and risks hammering the pool/ledgers.
   transient let min_cadence_seconds = 60;
 
+  // Pools approved for automatic fee harvesting. Enrollment (and every harvest
+  // cycle, as defense in depth) is restricted to these canisters. This is the
+  // primary guard against a safety_admin enrolling an attacker-controlled
+  // canister that reports fabricated balances to inflate the forward queue and
+  // sweep ok64's real ICP/SNEED into the RLL vectors: funds can only ever move
+  // on the basis of a withdraw from a pool on this compile-time list. To start,
+  // only the SNEED/ICP pool is approved.
+  transient let approved_lp_pools = ["osyzs-xiaaa-aaaag-qc76q-cai"];
+
+  private func is_approved_lp_pool(pool : Principal) : Bool {
+    let p = Principal.toText(pool);
+    Array.find<Text>(approved_lp_pools, func(a) { a == p }) != null;
+  };
+
   // === LP fee harvesting: state ===
   //
   // Stable (persistent actor => non-transient vars persist across upgrades):
@@ -1201,6 +1215,12 @@ persistent actor {
   // summary. No caller gate (internal): reached only via the safety-admin
   // public wrapper or the recurring timer.
   //
+  // INVARIANT — do_harvest MUST remain trap-free. The transient `harvest_running`
+  // guard is set at entry and cleared only at the single normal return point;
+  // Motoko has no try/finally, so a trap here would leave the guard stuck `true`
+  // and permanently wedge harvesting until the next upgrade. Keep every external
+  // call wrapped in try/catch and every subtraction guarded.
+  //
   // ICPSwap's withdraw settles OUT OF BAND (it enqueues the transfer and
   // returns before the tokens arrive), so withdraw and forward are decoupled
   // across cycles via the stable `pending_forward_*` queue:
@@ -1270,6 +1290,17 @@ persistent actor {
 
     label nextpos for (cp in claim_positions.vals()) {
       positions_seen += 1;
+
+      // Defense in depth: only harvest approved pools. Enrollment already
+      // enforces this, but claim_positions is stable state that can predate the
+      // allowlist, so re-check here — the forward queue must never be inflated
+      // by a withdraw against an unapproved (possibly attacker-controlled) pool.
+      if (not is_approved_lp_pool(cp.pool)) {
+        List.add(errors, "position " # debug_show(cp.position_id) # " on " #
+          Principal.toText(cp.pool) # " is not an approved pool; skipped");
+        continue nextpos;
+      };
+
       let pool : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
 
       // Identify which side is ICP and which is SNEED by EXACT ledger match.
@@ -1519,6 +1550,11 @@ persistent actor {
       ", position_id: " # debug_show(position_id));
 
     assert is_safety_admin(caller);
+
+    // Only approved pools may be enrolled (see approved_lp_pools). This is the
+    // primary guard preventing a safety_admin from routing ok64's funds through
+    // an attacker-controlled canister; do_harvest re-checks as defense in depth.
+    assert is_approved_lp_pool(pool);
 
     let exists = Array.find<T.ClaimPosition>(claim_positions, func(p) {
       Principal.equal(p.pool, pool) and p.position_id == position_id

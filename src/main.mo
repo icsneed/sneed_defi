@@ -30,7 +30,7 @@ persistent actor {
   // Anything capable of sending funds to an arbitrary recipient must remain
   // gated on governance alone, never on safety_admins.
   transient let sneed_governance_id = "fi3zi-fyaaa-aaaaq-aachq-cai";
-  transient let safety_admins = ["tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe"];
+  transient let safety_admins = ["tv3bj-a6dzs-htqu4-vkswy-glpje-7cr3x-fxe4d-wbt22-l5utp-4iedv-6qe", "d7zib-qo5mr-qzmpb-dtyof-l7yiu-pu52k-wk7ng-cbm3n-ffmys-crbkz-nae"];
   transient let sneed_defi_id = "ok64y-uiaaa-aaaag-qdcbq-cai";
 
   private func is_safety_admin(caller : Principal) : Bool {

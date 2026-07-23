@@ -11,6 +11,11 @@ Usage:
     SUMMARY="What this deploy changes and why." \
     python3 scripts/make_proposal_args.py [--reinstall]
 
+Any of NEURON_ID, TITLE and SUMMARY that are not supplied via the environment
+are prompted for interactively (only the missing ones). This makes the script
+usable both from a shell one-liner and by simply running it and answering the
+prompts.
+
 By default the proposal deploys the wasm as an upgrade (mode 3). Pass
 --reinstall to deploy in reinstall mode (mode 2) instead, which wipes all
 canister state.
@@ -40,6 +45,74 @@ REPO_URL = "https://github.com/icsneed/sneed_defi"
 # CanisterInstallMode values used by UpgradeSnsControlledCanister.
 MODE_REINSTALL = 2
 MODE_UPGRADE = 3
+
+
+def prompt_required(name: str, prompt_text: str) -> str:
+    """Return the env value for ``name`` if set, else prompt for it.
+
+    A value present in the environment is used as-is. When it is missing the
+    user is prompted (interactively or from piped stdin) and re-prompted until
+    they enter something non-empty. If stdin is exhausted with no value, error
+    out rather than hang.
+    """
+    value = os.environ.get(name, "")
+    if value.strip():
+        return value
+    while True:
+        try:
+            entered = input(f"{prompt_text}: ").strip()
+        except EOFError:
+            print(f"error: {name} not set and no input available", file=sys.stderr)
+            print(f'Set it in the environment, e.g. {name}="..."', file=sys.stderr)
+            sys.exit(1)
+        if entered:
+            return entered
+        print(f"{name} cannot be empty.", file=sys.stderr)
+
+
+def parse_neuron_id(neuron_hex: str):
+    """Parse a neuron subaccount, returning 32 bytes or ``None`` if invalid.
+
+    On failure the reason is printed to stderr so callers can either re-prompt
+    (interactive) or exit (value came from the environment).
+    """
+    neuron_hex = neuron_hex.strip().lower()
+    try:
+        neuron_bytes = bytes.fromhex(neuron_hex)
+    except ValueError:
+        print(f"error: neuron id must be hex characters, got: {neuron_hex!r}", file=sys.stderr)
+        return None
+    if len(neuron_bytes) != 32:
+        print(
+            f"error: neuron id must be 32 bytes (64 hex chars), got {len(neuron_bytes)} bytes",
+            file=sys.stderr,
+        )
+        return None
+    return neuron_bytes
+
+
+def prompt_neuron_id() -> bytes:
+    """Return the proposing neuron's 32-byte subaccount.
+
+    Uses NEURON_ID from the environment when set (erroring hard if it is
+    malformed), otherwise prompts and re-prompts until a valid value is entered.
+    """
+    from_env = os.environ.get("NEURON_ID", "")
+    if from_env.strip():
+        neuron_bytes = parse_neuron_id(from_env)
+        if neuron_bytes is None:
+            sys.exit(1)
+        return neuron_bytes
+    while True:
+        try:
+            entered = input("Neuron id (64 hex chars): ")
+        except EOFError:
+            print("error: NEURON_ID not set and no input available", file=sys.stderr)
+            print('Set it in the environment, e.g. NEURON_ID="<64 hex chars>"', file=sys.stderr)
+            sys.exit(1)
+        neuron_bytes = parse_neuron_id(entered)
+        if neuron_bytes is not None:
+            return neuron_bytes
 
 
 def candid_blob(data: bytes) -> str:
@@ -87,42 +160,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    title = os.environ.get("TITLE", "")
-    summary = os.environ.get("SUMMARY", "")
-    if not title or not summary:
-        print("error: TITLE and SUMMARY environment variables must be set", file=sys.stderr)
-        print(
-            'Example: TITLE="Upgrade Sneed DeFi canister" SUMMARY="..." '
-            "python3 scripts/make_proposal_args.py",
-            file=sys.stderr,
-        )
-        return 1
-
-    neuron_hex = os.environ.get("NEURON_ID", "").strip().lower()
-    if not neuron_hex:
-        print("error: NEURON_ID environment variable must be set", file=sys.stderr)
-        print(
-            'Example: NEURON_ID=b8aea533...df43 TITLE="Upgrade ..." '
-            'SUMMARY="..." python3 scripts/make_proposal_args.py',
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        neuron_bytes = bytes.fromhex(neuron_hex)
-    except ValueError:
-        print(f"error: NEURON_ID must be hex characters, got: {neuron_hex!r}", file=sys.stderr)
-        return 1
-    if len(neuron_bytes) != 32:
-        print(
-            f"error: NEURON_ID must be 32 bytes (64 hex chars), got {len(neuron_bytes)} bytes",
-            file=sys.stderr,
-        )
-        return 1
-
+    # Fail fast on the build artifact before prompting for anything.
     if not WASM.exists():
         print(f"error: wasm not found at {WASM}", file=sys.stderr)
         print("Run: icp build sneed_defi", file=sys.stderr)
         return 1
+
+    title = prompt_required("TITLE", "Proposal title")
+    summary = prompt_required("SUMMARY", "Proposal summary")
+    neuron_bytes = prompt_neuron_id()
 
     wasm_bytes = WASM.read_bytes()
     wasm_hash = hashlib.sha256(wasm_bytes).hexdigest()

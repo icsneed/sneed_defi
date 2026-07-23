@@ -806,6 +806,110 @@ persistent actor {
 
   };
 
+  // Withdraw as much of a token as is currently possible from an ICPSwap pool:
+  // the lesser of what this canister is owed and what the pool actually holds.
+  // If the pool holds less than it owes, an exact-amount withdraw of the full
+  // claim fails; this takes whatever is available and can be re-run as reserves
+  // return. Which of the pool's two tokens is requested is resolved by matching
+  // the address from metadata, never by assuming an order. ICPSwap credits the
+  // calling canister, so funds land here.
+  public shared ({ caller }) func icpswap_withdraw_max(
+    lp_canister_id : Principal,
+    token : Text,
+    fee : Nat)
+    : async Pool.ICPSwapNatResult {
+
+      log_msg("icpswap_withdraw_max called by " #
+        Principal.toText(caller) #
+        " with arguments: " #
+        "lp_canister_id: " # Principal.toText(lp_canister_id) #
+        ", token: " # token #
+        ", fee: " # debug_show(fee));
+
+      if (not is_safety_admin(caller)) {
+        let err_msg = "icpswap_withdraw_max ERROR: Not authorized (Was called by " #
+          Principal.toText(caller) # ")";
+        log_msg(err_msg);
+        return #err(#InternalError(err_msg));
+      };
+
+      try {
+
+        let lp_canister : Pool.ICPSwapPool = actor (Principal.toText(lp_canister_id));
+        let self = Principal.fromText(sneed_defi_id);
+
+        let meta = await lp_canister.metadata();
+        let is_token0 = switch (meta) {
+          case (#ok(m)) {
+            if (m.token0.address == token) { true }
+            else if (m.token1.address == token) { false }
+            else {
+              let err_msg = "icpswap_withdraw_max ERROR: token " # token #
+                " is not in pool " # Principal.toText(lp_canister_id);
+              log_msg(err_msg);
+              return #err(#UnsupportedToken(token));
+            };
+          };
+          case (#err(e)) {
+            let err_msg = "icpswap_withdraw_max ERROR: metadata failed: " # debug_show(e);
+            log_msg(err_msg);
+            return #err(e);
+          };
+        };
+
+        // What this canister is owed.
+        let unused = await lp_canister.getUserUnusedBalance(self);
+        let owed = switch (unused) {
+          case (#ok(b)) { if (is_token0) { b.balance0 } else { b.balance1 } };
+          case (#err(e)) {
+            let err_msg = "icpswap_withdraw_max ERROR: getUserUnusedBalance failed: " # debug_show(e);
+            log_msg(err_msg);
+            return #err(e);
+          };
+        };
+
+        // What the pool actually holds.
+        let held_balance = await lp_canister.getTokenBalance();
+        let held = if (is_token0) { held_balance.token0 } else { held_balance.token1 };
+
+        let amount = Nat.min(owed, held);
+
+        log_msg("icpswap_withdraw_max, token: " # token #
+          ", is_token0: " # debug_show(is_token0) #
+          ", owed: " # debug_show(owed) #
+          ", held: " # debug_show(held) #
+          ", withdrawing: " # debug_show(amount));
+
+        // A withdrawal at or below the ledger fee nets nothing.
+        if (amount <= fee) {
+          let err_msg = "icpswap_withdraw_max ERROR: available amount " #
+            debug_show(amount) # " does not exceed fee " # debug_show(fee);
+          log_msg(err_msg);
+          return #err(#InsufficientFunds);
+        };
+
+        let result = await lp_canister.withdraw({
+          token = token;
+          fee = fee;
+          amount = amount;
+        });
+
+        log_msg("icpswap_withdraw_max, called withdraw of " #
+          Principal.toText(lp_canister_id) #
+          " with result: " # debug_show(result));
+
+        result;
+
+      } catch e {
+
+        let err_msg = "icpswap_withdraw_max ERROR: " # Error.message(e);
+        log_msg(err_msg);
+        return #err(#InternalError(Error.message(e)));
+
+      };
+
+  };
+
   // Transfer an ICPSwap LP position owned by this canister.
   // This method may only be called by the Sneed DAO Governance Canister, via approved DAO proposal.
   public shared ({ caller }) func transfer_icpex_lp_position(

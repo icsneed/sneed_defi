@@ -98,32 +98,33 @@ type ClaimPosition = {
 // Result of one harvest cycle. Logged and returned so operators can see
 // exactly what moved. `errors` lists per-step failures; empty when clean.
 //
-// Because ICPSwap's withdraw settles out of band, withdrawing and forwarding
-// are decoupled: a cycle first forwards what earlier cycles withdrew (now
-// settled), then withdraws this cycle's fees into the forward queue. The
-// `pending_*` counters carry the queue between cycles (and across upgrades).
+// ICPSwap's claim auto-withdraws fees to the harvest subaccount out of band, so
+// a cycle FORWARDS whatever has already settled in that subaccount, then CLAIMS
+// new fees (forwarded by the delayed job / next cycle). The harvest-subaccount
+// balance is the source of truth; there is no in-canister forward queue.
 type HarvestSummary = {
     positions_seen : Nat;         // enrolled positions considered this cycle
-    positions_harvested : Nat;    // positions where at least one token was withdrawn
-    withdrawn_icp : Nat;          // net ICP added to the forward queue this cycle
-    withdrawn_sneed : Nat;        // net SNEED added to the forward queue this cycle
+    positions_harvested : Nat;    // positions where claimToSubaccount succeeded
+    claimed_icp : Nat;            // ICP claimed this cycle (settles async, forwarded later)
+    claimed_sneed : Nat;          // SNEED claimed this cycle (settles async, forwarded later)
     forwarded_icp : Nat;          // ICP sent to the ICP vector this cycle (net of fee)
     forwarded_sneed : Nat;        // SNEED sent to the SNEED vector this cycle (net of fee)
-    pending_icp : Nat;            // ICP still queued for forwarding after this cycle
-    pending_sneed : Nat;          // SNEED still queued for forwarding after this cycle
+    harvest_balance_icp : Nat;    // ICP seen in the harvest subaccount during the forward phase
+    harvest_balance_sneed : Nat;  // SNEED seen in the harvest subaccount during the forward phase
     icp_forward_tx : ?TxIndex;    // ledger tx index of the ICP forward, if it happened
     sneed_forward_tx : ?TxIndex;  // ledger tx index of the SNEED forward, if it happened
     errors : [Text];
 };
 
-// Read-only view of the current harvest schedule, forward queue and positions.
+// Read-only view of the current harvest schedule, harvest account and positions.
+// `harvest_account` is exposed so operators can read its live ICP/SNEED balance
+// directly on the ledgers (a query cannot make inter-canister balance calls).
 type ClaimConfigView = {
     active : Bool;
     cadence_seconds : Nat;
     min_icp : Balance;
     min_sneed : Balance;
-    pending_icp : Balance;        // ICP withdrawn but not yet forwarded
-    pending_sneed : Balance;      // SNEED withdrawn but not yet forwarded
+    harvest_account : Account;
     positions : [ClaimPosition];
 };
 

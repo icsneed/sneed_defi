@@ -121,10 +121,12 @@ persistent actor {
   // Transient: timer ids do not survive upgrades; re-armed in postupgrade.
   transient var claim_timer_id : ?Nat = null;
 
-  // Transient reentrancy guard: never run two harvest cycles at once (a slow
+  // Transient reentrancy guard: never run two harvest cycles at once. A slow
   // cycle overlapping the next tick, or a manual run racing the timer, would
-  // double-forward the pending queue). do_harvest is trap-free, so this is
-  // always reset; an upgrade also clears it.
+  // redundantly re-claim positions and re-scan the harvest subaccount. (It could
+  // not double-forward: forward_token drains the real on-chain subaccount balance,
+  // so an overlap merely no-ops the second transfer.) do_harvest is trap-free, so
+  // this guard is always reset; an upgrade also clears it.
   transient var harvest_running : Bool = false;
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).

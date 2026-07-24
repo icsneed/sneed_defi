@@ -154,8 +154,16 @@ module {
         #err : ICPSwapError;
     };
 
+    // Claim that delivers the auto-withdrawn fees to caller/subaccount instead of
+    // caller/default. ICPSwap: ClaimToSubaccountArgs = { positionId; subaccount }.
+    public type ICPSwapClaimToSubaccountArgs = {
+        positionId : Nat;
+        subaccount : Blob;
+    };
+
     public type ICPSwapPool = actor {
         claim : (args : ClaimArgs) -> async ICPSwapAmountsResult;
+        claimToSubaccount : (args : ICPSwapClaimToSubaccountArgs) -> async ICPSwapAmountsResult;
         decreaseLiquidity : (args : DecreaseLiquidityArgs) -> async ICPSwapAmountsResult;
         withdraw : (args : WithdrawArgs) -> async ICPSwapNatResult;
         getUserUnusedBalance : (account : Principal) -> async ICPSwapUnusedBalanceResult;

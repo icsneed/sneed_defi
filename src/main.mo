@@ -9,6 +9,7 @@ import List "mo:core/List";
 import Time "mo:core/Time";
 import Principal "mo:core/Principal";
 import Error "mo:core/Error";
+import Runtime "mo:core/Runtime";
 import Timer "mo:core/Timer";
 
 import T "Types";
@@ -63,6 +64,10 @@ persistent actor {
   // against these by EXACT address, so only genuine SNEED/ICP fees are moved.
   transient let icp_ledger_id = "ryjl3-tyaaa-aaaaa-aaaba-cai";
   transient let sneed_ledger_id = "hvgxa-wqaaa-aaaaq-aacia-cai";
+  
+  // Where to send icrc1 tokens for distribution that arent SNEED or ICP.
+  // SNEED and ICP should go to respective vector addresses.
+  transient let rll_distribution_canister_id = "lvc4n-7aaaa-aaaam-adm6a-cai";
 
   // Sneed "RLL" neuron-pool-vector destinations. These are the ONLY places the
   // harvester can send funds, and they are compile-time constants: no caller
@@ -75,6 +80,17 @@ persistent actor {
   transient let rll_sneed_subaccount : Blob = Blob.fromArray([1, 0, 0, 0, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   transient let rll_icp_dest : T.Account = { owner = rll_vector_owner; subaccount = ?rll_icp_subaccount };
   transient let rll_sneed_dest : T.Account = { owner = rll_vector_owner; subaccount = ?rll_sneed_subaccount };
+
+  // Destination for every harvested token that is not ICP or SNEED. The RLL
+  // distribution canister tracks its own per-ledger holdings and distributes
+  // from them, so it receives tokens in its DEFAULT account.
+  transient let rll_distribution_dest : T.Account =
+    { owner = Principal.fromText(rll_distribution_canister_id); subaccount = null };
+
+  // Upper bound on the harvest token registry. The forward loop makes up to three
+  // sequential inter-canister calls per registered ledger (icrc1_fee,
+  // icrc1_balance_of, icrc1_transfer), so this caps how long a forward pass runs.
+  transient let max_harvest_tokens : Nat = 32;
 
   // Dedicated destination for auto-withdrawn LP fees. Derived from THIS canister's
   // principal via PrincipalToSubaccount (see below), so it is injective and can
@@ -95,20 +111,6 @@ persistent actor {
   // sub-minute cadence buys nothing and risks hammering the pool/ledgers.
   transient let min_cadence_seconds = 60;
 
-  // Pools approved for automatic fee harvesting. Enrollment (and every harvest
-  // cycle, as defense in depth) is restricted to these canisters. This is the
-  // primary guard against a safety_admin enrolling an attacker-controlled
-  // canister and having its fabricated tokens claimed into the harvest subaccount
-  // and swept into the RLL vectors: fees can only ever be claimed from a pool on
-  // this compile-time list. To start,
-  // only the SNEED/ICP pool is approved.
-  transient let approved_lp_pools = ["osyzs-xiaaa-aaaag-qc76q-cai"];
-
-  private func is_approved_lp_pool(pool : Principal) : Bool {
-    let p = Principal.toText(pool);
-    Array.find<Text>(approved_lp_pools, func(a) { a == p }) != null;
-  };
-
   // === LP fee harvesting: state ===
   //
   // Stable (persistent actor => non-transient vars persist across upgrades):
@@ -117,6 +119,25 @@ persistent actor {
   var claim_min_icp : Nat = 0;                   // per-token minimum before ICP is forwarded
   var claim_min_sneed : Nat = 0;                 // per-token minimum before SNEED is forwarded
   var claim_active : Bool = false;               // whether a recurring harvest is scheduled
+
+  // Ledgers the forward phase sweeps. Populated at enrollment from the enrolled
+  // pool's metadata(). Deliberately NOT pruned when a position is removed, so a
+  // residual balance of that token still gets forwarded. Capped at
+  // max_harvest_tokens.
+  var claim_tokens : [Principal] = [];
+
+  // pool -> (token0 ledger, token1 ledger), captured at enrollment. Lets the
+  // claim loop attribute amount0/amount1 to ledgers with no inter-canister call.
+  // Bounded by the number of enrolled pools, so it needs no cap of its own.
+  // NOTE: this is a separate stable var rather than two extra fields on
+  // ClaimPosition because extending an existing stable record fails
+  // `moc --stable-compatible` (M0170) and the upgrade would be rejected.
+  var claim_pool_tokens : [T.PoolTokens] = [];
+
+  // Forward threshold for tokens other than ICP/SNEED, as a multiple of the
+  // token's own ledger fee. Scale-free: correct for any decimals or price
+  // without per-token configuration. Rejected as 0 by set_lp_fee_claim_schedule.
+  var claim_min_fee_multiple : Nat = 10;
 
   // Transient: timer ids do not survive upgrades; re-armed in postupgrade.
   transient var claim_timer_id : ?Nat = null;
@@ -128,6 +149,67 @@ persistent actor {
   // so an overlap merely no-ops the second transfer.) do_harvest is trap-free, so
   // this guard is always reset; an upgrade also clears it.
   transient var harvest_running : Bool = false;
+
+  // The complete routing table for harvested tokens. Keyed on ledger id alone:
+  // a token's origin pool is irrelevant, so ICP and SNEED harvested from ANY
+  // pair reach the same vectors the SNEED/ICP pair always used. No caller input
+  // reaches this function, so no caller can change where funds go.
+  private func rll_dest_for(ledger : Text) : T.Account {
+    if (ledger == icp_ledger_id) { rll_icp_dest }
+    else if (ledger == sneed_ledger_id) { rll_sneed_dest }
+    else { rll_distribution_dest };
+  };
+
+  // Smallest balance worth forwarding for a ledger. ICP and SNEED keep their
+  // operator-set absolute minimums; everything else uses the fee multiple.
+  private func min_forward_for(ledger : Text, fee : Nat) : Nat {
+    if (ledger == icp_ledger_id) { claim_min_icp }
+    else if (ledger == sneed_ledger_id) { claim_min_sneed }
+    else { fee * claim_min_fee_multiple };
+  };
+
+  // Add a ledger to the harvest token registry. Idempotent. Returns false ONLY
+  // when the registry is full and the ledger is therefore not registered.
+  private func register_harvest_token(ledger : Principal) : Bool {
+    if (Array.find<Principal>(claim_tokens, func(t) { Principal.equal(t, ledger) }) != null) {
+      return true;
+    };
+    if (claim_tokens.size() >= max_harvest_tokens) { return false };
+    claim_tokens := Array.concat<Principal>(claim_tokens, [ledger]);
+    true;
+  };
+
+  // The token pair recorded for a pool at enrollment, if any.
+  private func pool_tokens_for(pool : Principal) : ?T.PoolTokens {
+    Array.find<T.PoolTokens>(claim_pool_tokens, func(pt) { Principal.equal(pt.pool, pool) });
+  };
+
+  // Record (or replace) a pool's token pair.
+  private func set_pool_tokens(pt : T.PoolTokens) {
+    claim_pool_tokens := Array.concat<T.PoolTokens>(
+      Array.filter<T.PoolTokens>(claim_pool_tokens, func(e) { not Principal.equal(e.pool, pt.pool) }),
+      [pt]);
+  };
+
+  // Accumulate `amount` against `ledger` in a per-ledger tally, summing repeats.
+  // A zero amount adds no entry, so the tally lists only ledgers that moved.
+  private func tally_add(tally : List.List<T.TokenAmount>, ledger : Principal, amount : Nat) {
+    if (amount == 0) { return };
+    var i = 0;
+    while (i < List.size(tally)) {
+      switch (List.get(tally, i)) {
+        case (?e) {
+          if (Principal.equal(e.ledger, ledger)) {
+            List.put(tally, i, { ledger = ledger; amount = e.amount + amount });
+            return;
+          };
+        };
+        case null {};
+      };
+      i += 1;
+    };
+    List.add(tally, { ledger = ledger; amount = amount });
+  };
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).
   // Can only be called by the Sneed DAO governance canister (via approved proposal)!
@@ -1165,11 +1247,12 @@ persistent actor {
   // ============================================================================
   // LP fee harvesting -> RLL routing
   //
-  // On a timer, claim SNEED/ICP fees from enrolled ICPSwap positions this
-  // canister owns and forward each token to its hardcoded Sneed RLL vector.
-  // Funds can ONLY ever reach the two compile-time RLL destinations, so the
-  // schedule/position controls are safe to expose to safety_admins: no caller
-  // input can change where fees go, only which pools are harvested and how often.
+  // On a timer, claim fees from enrolled ICPSwap positions this canister owns and
+  // forward each token to its compile-time destination: ICP and SNEED to their
+  // Sneed RLL vectors, every other ICRC-1 token to the RLL distribution canister.
+  // Funds can ONLY ever reach those three destinations, so the schedule/position
+  // controls are safe to expose to safety_admins: no caller input can change
+  // where fees go, only which pools are harvested and how often.
   // ============================================================================
 
   // Build a HarvestSummary that carries only an error (used to reject a call
@@ -1178,31 +1261,29 @@ persistent actor {
     {
       positions_seen = 0;
       positions_harvested = 0;
-      claimed_icp = 0;
-      claimed_sneed = 0;
-      forwarded_icp = 0;
-      forwarded_sneed = 0;
-      harvest_balance_icp = 0;
-      harvest_balance_sneed = 0;
-      icp_forward_tx = null;
-      sneed_forward_tx = null;
+      claimed = [];
       errors = [msg];
     };
   };
 
-  // Drain the harvest subaccount for one token to its RLL vector. Trap-free and
-  // idempotent: reads the REAL subaccount balance every call, so a delayed job
-  // overlapping the next cycle's forward can never double-spend (the later run
-  // sees ~0). Forwards only when the balance clears `min_amount` and exceeds the
-  // ledger fee. Returns (forwarded_net, tx, balance_seen).
+  // Drain the harvest subaccount for one token to its RLL destination. Trap-free
+  // and idempotent: reads the REAL subaccount balance every call, so a delayed
+  // job overlapping a later pass can never double-spend (the later run sees ~0).
+  // Forwards only when the balance clears `min_amount` and exceeds the ledger fee.
+  //
+  // This is the ONLY code that spends from the harvest subaccount. Note
+  // `from_subaccount = ?harvest_subaccount`: the canister's own holdings live in
+  // the DEFAULT subaccount and are unreachable from here.
   private func forward_token(
-    ledger : T.ICRC1Ledger,
+    ledger_id : Principal,
     dest : T.Account,
     fee : Nat,
     min_amount : Nat,
-    label_ : Text,
     errors : List.List<Text>)
-    : async (Nat, ?Nat, Nat) {
+    : async T.ForwardResult {
+
+    let label_ = Principal.toText(ledger_id);
+    let ledger : T.ICRC1Ledger = actor (label_);
 
     let bal : ?Nat =
       try { ?(await ledger.icrc1_balance_of(harvest_account)) }
@@ -1210,7 +1291,9 @@ persistent actor {
 
     switch (bal) {
       case (?b) {
-        if (b < min_amount or b <= fee) { return (0, null, b) };
+        if (b < min_amount or b <= fee) {
+          return { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = 0; tx = null };
+        };
         let send_amount = b - fee : Nat;
         let res : T.TransferResult =
           try {
@@ -1224,60 +1307,61 @@ persistent actor {
             })
           } catch e { #Err(#GenericError({ error_code = 1; message = Error.message(e) })) };
         switch (res) {
-          case (#Ok(tx)) { (send_amount, ?tx, b) };
-          case (#Err(e)) { List.add(errors, "forward(" # label_ # ") failed: " # debug_show(e)); (0, null, b) };
+          case (#Ok(tx)) {
+            { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = send_amount; tx = ?tx };
+          };
+          case (#Err(e)) {
+            List.add(errors, "forward(" # label_ # ") failed: " # debug_show(e));
+            { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = 0; tx = null };
+          };
         };
       };
-      case null { (0, null, 0) };
+      case null {
+        { ledger = ledger_id; dest = dest; balance_seen = 0; forwarded = 0; tx = null };
+      };
     };
+  };
+
+  // Sweep every registered token from the harvest subaccount to its destination.
+  // Trap-free: a ledger whose fee cannot be read is skipped this pass and its
+  // balance carries to a later one.
+  private func forward_all(errors : List.List<Text>) : async [T.ForwardResult] {
+    let results = List.empty<T.ForwardResult>();
+
+    for (ledger_id in claim_tokens.vals()) {
+      let lid = Principal.toText(ledger_id);
+      let ledger : T.ICRC1Ledger = actor (lid);
+
+      let fee : ?Nat =
+        try { ?(await ledger.icrc1_fee()) }
+        catch e { List.add(errors, "icrc1_fee(" # lid # ") failed: " # Error.message(e)); null };
+
+      switch (fee) {
+        case (?f) {
+          let r = await forward_token(ledger_id, rll_dest_for(lid), f, min_forward_for(lid, f), errors);
+          List.add(results, r);
+        };
+        case null {};
+      };
+    };
+
+    List.toArray(results);
   };
 
   // Delayed one-shot (scheduled at the end of do_harvest). After ICPSwap has had
   // `settle_delay_seconds` to process this cycle's claim auto-withdraws, drain the
-  // harvest subaccount to the RLL vectors. Trap-free; no reentrancy guard needed
-  // because forward_token reads the real balance (idempotent under overlap).
+  // harvest subaccount to the RLL destinations. Trap-free; no reentrancy guard
+  // needed because forward_token reads the real balance (idempotent under overlap).
   private func forward_only_job() : async () {
     let errors = List.empty<Text>();
-    let icp_ledger : T.ICRC1Ledger = actor (icp_ledger_id);
-    let sneed_ledger : T.ICRC1Ledger = actor (sneed_ledger_id);
-
-    var forwarded_icp : Nat = 0;
-    var forwarded_sneed : Nat = 0;
-    var icp_tx : ?Nat = null;
-    var sneed_tx : ?Nat = null;
-
-    let icp_fee : ?Nat =
-      try { ?(await icp_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(ICP) failed: " # Error.message(e)); null };
-    switch (icp_fee) {
-      case (?f) {
-        let (sent, tx, _bal) = await forward_token(icp_ledger, rll_icp_dest, f, claim_min_icp, "ICP", errors);
-        forwarded_icp := sent; icp_tx := tx;
-      };
-      case null {};
-    };
-
-    let sneed_fee : ?Nat =
-      try { ?(await sneed_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(SNEED) failed: " # Error.message(e)); null };
-    switch (sneed_fee) {
-      case (?f) {
-        let (sent, tx, _bal) = await forward_token(sneed_ledger, rll_sneed_dest, f, claim_min_sneed, "SNEED", errors);
-        forwarded_sneed := sent; sneed_tx := tx;
-      };
-      case null {};
-    };
-
-    log_msg("delayed forward completed: forwarded_icp=" # debug_show(forwarded_icp) #
-      " forwarded_sneed=" # debug_show(forwarded_sneed) #
-      " icp_tx=" # debug_show(icp_tx) # " sneed_tx=" # debug_show(sneed_tx) #
+    let results = await forward_all(errors);
+    log_msg("delayed forward completed: results=" # debug_show(results) #
       " errors=" # debug_show(List.toArray(errors)));
   };
 
-  // Core harvest logic. Best-effort and trap-free: one failing position or
-  // ledger call never aborts the cycle; every failure is recorded in the
-  // summary. No caller gate (internal): reached only via the safety-admin
-  // public wrapper or the recurring timer.
+  // Core harvest logic. Best-effort and trap-free: one failing position never
+  // aborts the cycle; every failure is recorded in the summary. No caller gate
+  // (internal): reached only via the safety-admin public wrapper or the timer.
   //
   // INVARIANT — do_harvest MUST remain trap-free. The transient `harvest_running`
   // guard is set at entry and cleared only at the single normal return point;
@@ -1287,13 +1371,13 @@ persistent actor {
   //
   // ICPSwap's claim AUTO-WITHDRAWS the claimed fees to the target subaccount and
   // settles OUT OF BAND (it enqueues the transfer and returns before the tokens
-  // arrive), so claim and forward are decoupled across cycles via the harvest
-  // subaccount balance:
-  //   1. FORWARD whatever has already settled in the harvest subaccount to the
-  //      RLL vectors (gated by the per-token minimums).
-  //   2. CLAIM this cycle's fees into the harvest subaccount (claimToSubaccount).
-  //   3. SCHEDULE a one-shot delayed forward so this cycle's proceeds are routed
-  //      once ICPSwap has settled them.
+  // arrive), so a cycle only claims:
+  //   1. CLAIM each position's fees into the harvest subaccount.
+  //   2. SCHEDULE a one-shot delayed forward to route them once settled.
+  // The delayed job drains the FULL subaccount balance per registered token, so
+  // anything a previous cycle left behind is swept by a later one.
+  //
+  // No pool metadata is read here: the token pair was captured at enrollment.
   private func do_harvest() : async T.HarvestSummary {
 
     // Reentrancy guard: never overlap two cycles.
@@ -1304,107 +1388,40 @@ persistent actor {
     harvest_running := true;
 
     let errors = List.empty<Text>();
+    let claimed = List.empty<T.TokenAmount>();
 
-    let icp_ledger : T.ICRC1Ledger = actor (icp_ledger_id);
-    let sneed_ledger : T.ICRC1Ledger = actor (sneed_ledger_id);
-
-    // Ledger fees (best-effort). A token whose fee is unreadable is not forwarded
-    // this cycle; its subaccount balance carries to a later run.
-    let icp_fee : ?Nat =
-      try { ?(await icp_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(ICP) failed: " # Error.message(e)); null };
-    let sneed_fee : ?Nat =
-      try { ?(await sneed_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(SNEED) failed: " # Error.message(e)); null };
-
-    // === 1. Forward phase: drain the harvest subaccount to the RLL vectors. ===
-    // Consumes proceeds that have already settled (earlier cycles' / delayed
-    // job's claims). Gated by the per-token minimums.
-    var forwarded_icp : Nat = 0;
-    var forwarded_sneed : Nat = 0;
-    var icp_forward_tx : ?Nat = null;
-    var sneed_forward_tx : ?Nat = null;
-    var harvest_balance_icp : Nat = 0;
-    var harvest_balance_sneed : Nat = 0;
-
-    switch (icp_fee) {
-      case (?f) {
-        let (sent, tx, bal) =
-          await forward_token(icp_ledger, rll_icp_dest, f, claim_min_icp, "ICP", errors);
-        forwarded_icp := sent;
-        icp_forward_tx := tx;
-        harvest_balance_icp := bal;
-      };
-      case null {};
-    };
-    switch (sneed_fee) {
-      case (?f) {
-        let (sent, tx, bal) =
-          await forward_token(sneed_ledger, rll_sneed_dest, f, claim_min_sneed, "SNEED", errors);
-        forwarded_sneed := sent;
-        sneed_forward_tx := tx;
-        harvest_balance_sneed := bal;
-      };
-      case null {};
-    };
-
-    // === 2. Claim phase: claim each position's fees into the harvest subaccount. ===
-    // ICPSwap's claim auto-withdraws the claimed amount to the given subaccount,
-    // settling out of band; the delayed forward (scheduled below) routes it.
     var positions_seen : Nat = 0;
     var positions_harvested : Nat = 0;
-    var claimed_icp : Nat = 0;
-    var claimed_sneed : Nat = 0;
 
-    label nextpos for (cp in claim_positions.vals()) {
+    for (cp in claim_positions.vals()) {
       positions_seen += 1;
-
-      // Defense in depth: only harvest approved pools. Enrollment already enforces
-      // this, but claim_positions is stable state that can predate the allowlist.
-      if (not is_approved_lp_pool(cp.pool)) {
-        List.add(errors, "position " # debug_show(cp.position_id) # " on " #
-          Principal.toText(cp.pool) # " is not an approved pool; skipped");
-        continue nextpos;
-      };
 
       let pool : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
 
-      // Identify which side is ICP and which is SNEED by EXACT ledger match. Skip
-      // anything that is not exactly a SNEED/ICP pool (never claim an unrecognised
-      // pool's tokens into the harvest subaccount). Also used to map the claimed
-      // amounts onto the ICP/SNEED sides for the summary.
-      let meta : Pool.ICPSwapMetadataResult =
-        try { await pool.metadata() }
-        catch e { #err(#InternalError(Error.message(e))) };
-      let icp_is_token0 = switch (meta) {
-        case (#ok(m)) {
-          if (m.token0.address == icp_ledger_id and m.token1.address == sneed_ledger_id) { true }
-          else if (m.token0.address == sneed_ledger_id and m.token1.address == icp_ledger_id) { false }
-          else {
-            List.add(errors, "position " # debug_show(cp.position_id) # " on " #
-              Principal.toText(cp.pool) # " is not a SNEED/ICP pool; skipped");
-            continue nextpos;
-          };
-        };
-        case (#err(e)) {
-          List.add(errors, "metadata failed for " # Principal.toText(cp.pool) #
-            " position " # debug_show(cp.position_id) # ": " # debug_show(e));
-          continue nextpos;
-        };
-      };
-
       // Claim accrued fees to the harvest subaccount. ICPSwap auto-withdraws them
-      // out of band; forwarded by the delayed job / next cycle.
+      // out of band; the delayed job / a later cycle forwards them.
       let claim_res : Pool.ICPSwapAmountsResult =
         try { await pool.claimToSubaccount({ positionId = cp.position_id; subaccount = harvest_subaccount }) }
         catch e { #err(#InternalError(Error.message(e))) };
+
       switch (claim_res) {
         case (#ok(a)) {
           positions_harvested += 1;
-          let icp_amt   = if (icp_is_token0) { a.amount0 } else { a.amount1 };
-          let sneed_amt = if (icp_is_token0) { a.amount1 } else { a.amount0 };
-          claimed_icp += icp_amt;
-          claimed_sneed += sneed_amt;
+          // Attribute the amounts using the pair captured at enrollment. A miss
+          // should be unreachable (enrollment always records one, and postupgrade
+          // backfills), so it is reported rather than silently ignored. The claim
+          // still counts: the proceeds are safely in the harvest subaccount.
+          switch (pool_tokens_for(cp.pool)) {
+            case (?pt) {
+              tally_add(claimed, pt.token0, a.amount0);
+              tally_add(claimed, pt.token1, a.amount1);
+            };
+            case null {
+              List.add(errors, "no token mapping for pool " # Principal.toText(cp.pool) #
+                "; claimed amounts not attributed and its tokens may be unregistered." #
+                " Run refresh_lp_pool_tokens().");
+            };
+          };
         };
         case (#err(e)) {
           List.add(errors, "claim failed for " # Principal.toText(cp.pool) #
@@ -1413,22 +1430,14 @@ persistent actor {
       };
     };
 
-    // === 3. Schedule the delayed forward for this cycle's freshly-claimed fees. ===
-    // One-shot; not persisted across upgrades (the next cycle's forward phase
-    // catches any straggler).
+    // Schedule the delayed forward for this cycle's freshly-claimed fees.
+    // One-shot; not persisted across upgrades (a later cycle catches stragglers).
     ignore Timer.setTimer<system>(#seconds settle_delay_seconds, forward_only_job);
 
     let summary : T.HarvestSummary = {
       positions_seen = positions_seen;
       positions_harvested = positions_harvested;
-      claimed_icp = claimed_icp;
-      claimed_sneed = claimed_sneed;
-      forwarded_icp = forwarded_icp;
-      forwarded_sneed = forwarded_sneed;
-      harvest_balance_icp = harvest_balance_icp;
-      harvest_balance_sneed = harvest_balance_sneed;
-      icp_forward_tx = icp_forward_tx;
-      sneed_forward_tx = sneed_forward_tx;
+      claimed = List.toArray(claimed);
       errors = List.toArray(errors);
     };
 
@@ -1466,13 +1475,15 @@ persistent actor {
   public shared ({ caller }) func set_lp_fee_claim_schedule(
     cadence_seconds : Nat,        // how often to harvest, in seconds (>= 60)
     min_icp : T.Balance,          // minimum accumulated ICP before it is forwarded
-    min_sneed : T.Balance)        // minimum accumulated SNEED before it is forwarded
+    min_sneed : T.Balance,        // minimum accumulated SNEED before it is forwarded
+    min_fee_multiple : Nat)       // forward gate for other tokens, as a multiple of their ledger fee (>= 1)
     : async T.HarvestSummary {
 
     log_msg("set_lp_fee_claim_schedule called by " # Principal.toText(caller) #
       " with arguments: cadence_seconds: " # debug_show(cadence_seconds) #
       ", min_icp: " # debug_show(min_icp) #
-      ", min_sneed: " # debug_show(min_sneed));
+      ", min_sneed: " # debug_show(min_sneed) #
+      ", min_fee_multiple: " # debug_show(min_fee_multiple));
 
     if (not is_safety_admin(caller)) {
       let err_msg = "set_lp_fee_claim_schedule ERROR: Not authorized (Was called by " #
@@ -1488,6 +1499,14 @@ persistent actor {
       return err_summary(err_msg);
     };
 
+    // Zero would silently disable the dust guard for every non-ICP/SNEED token.
+    // An operator who genuinely wants fee-only gating passes 1.
+    if (min_fee_multiple < 1) {
+      let err_msg = "set_lp_fee_claim_schedule ERROR: min_fee_multiple must be at least 1";
+      log_msg(err_msg);
+      return err_summary(err_msg);
+    };
+
     // Stop any previously configured timer.
     switch (claim_timer_id) {
       case (?id) { Timer.cancelTimer(id); claim_timer_id := null };
@@ -1499,6 +1518,7 @@ persistent actor {
     claim_cadence_seconds := cadence_seconds;
     claim_min_icp := min_icp;
     claim_min_sneed := min_sneed;
+    claim_min_fee_multiple := min_fee_multiple;
     claim_active := true;
 
     // Run one harvest now, then arm the recurring timer.
@@ -1530,7 +1550,21 @@ persistent actor {
   };
 
   // Enroll a position in automatic fee harvesting. Safety-admin gated.
-  // Idempotent: adding an already-enrolled (pool, position_id) is a no-op.
+  //
+  // Pool metadata is read here, on the enrollment path, which keeps it off the
+  // per-cycle harvest path and means harvesting no longer depends on a pool's
+  // metadata() being readable. refresh_pool_tokens re-reads it too, but only for
+  // repair/backfill (postupgrade, or the operator lever) — this call is the one
+  // that establishes a position's token pair in the first place.
+  //
+  // Re-enrolling an already-enrolled (pool, position_id) leaves the position
+  // list unchanged, but it is NOT a no-op: it still makes the metadata() call
+  // above, rewrites that pool's entry in claim_pool_tokens, may register a
+  // newly-observed token, and can trap if the registry is full.
+  //
+  // Nothing is mutated before the metadata call returns, and a trap rolls back
+  // every change made since that await — so a failed enroll leaves no partial
+  // state behind.
   public shared ({ caller }) func add_lp_fee_claim_position(
     pool : Principal,
     position_id : Nat)
@@ -1542,23 +1576,117 @@ persistent actor {
 
     assert is_safety_admin(caller);
 
-    // Only approved pools may be enrolled (see approved_lp_pools). This is the
-    // primary guard preventing a safety_admin from routing ok64's funds through
-    // an attacker-controlled canister; do_harvest re-checks as defense in depth.
-    assert is_approved_lp_pool(pool);
+    let p : Pool.ICPSwapPool = actor (Principal.toText(pool));
+    let meta : Pool.ICPSwapMetadataResult =
+      try { await p.metadata() }
+      catch e { #err(#InternalError(Error.message(e))) };
 
-    let exists = Array.find<T.ClaimPosition>(claim_positions, func(p) {
-      Principal.equal(p.pool, pool) and p.position_id == position_id
+    // Principal.fromText traps on a malformed address. That is the right outcome
+    // here: a pool that cannot name its own tokens must not be enrolled.
+    let (token0, token1) = switch (meta) {
+      case (#ok(m)) {
+        (Principal.fromText(m.token0.address), Principal.fromText(m.token1.address));
+      };
+      case (#err(e)) {
+        let err_msg = "add_lp_fee_claim_position ERROR: metadata failed for " #
+          Principal.toText(pool) # ": " # debug_show(e);
+        log_msg(err_msg);
+        Runtime.trap(err_msg);
+      };
+    };
+
+    // Refuse to enroll a position whose proceeds could never be swept.
+    if (not register_harvest_token(token0) or not register_harvest_token(token1)) {
+      let err_msg = "add_lp_fee_claim_position ERROR: harvest token registry is full (max " #
+        debug_show(max_harvest_tokens) # "); prune with remove_lp_harvest_token before enrolling " #
+        Principal.toText(pool);
+      log_msg(err_msg);
+      Runtime.trap(err_msg);
+    };
+
+    set_pool_tokens({ pool = pool; token0 = token0; token1 = token1 });
+
+    let exists = Array.find<T.ClaimPosition>(claim_positions, func(p2) {
+      Principal.equal(p2.pool, pool) and p2.position_id == position_id
     }) != null;
 
     if (not exists) {
       claim_positions := Array.concat<T.ClaimPosition>(
         claim_positions, [{ pool = pool; position_id = position_id }]);
-      log_msg("add_lp_fee_claim_position: enrolled " # Principal.toText(pool) #
-        " position " # debug_show(position_id));
     };
 
+    log_msg("add_lp_fee_claim_position: enrolled " # Principal.toText(pool) #
+      " position " # debug_show(position_id) #
+      " with tokens " # Principal.toText(token0) # " / " # Principal.toText(token1));
+
     claim_positions;
+  };
+
+  // Re-read metadata() for every enrolled pool and repopulate the token pair map
+  // and the harvest token registry. Internal core, shared by the public lever and
+  // the post-upgrade backfill.
+  //
+  // Best-effort: a pool whose metadata() call fails is skipped with a recorded
+  // error rather than aborting the rest, because this runs unattended from
+  // postupgrade. One narrow exception: Principal.fromText traps on a malformed
+  // address, so a pool that REPLIES SUCCESSFULLY with an invalid principal string
+  // will abort the run (pools already processed stay committed). That is
+  // unreachable for a real ICPSwap pool; the remedy is remove_lp_fee_claim_position.
+  private func refresh_pool_tokens() : async [Text] {
+    let errors = List.empty<Text>();
+    let seen = List.empty<Principal>();
+
+    for (cp in claim_positions.vals()) {
+      // Several positions can share a pool; read each pool's metadata once.
+      if (List.find<Principal>(seen, func(x) { Principal.equal(x, cp.pool) }) == null) {
+        List.add(seen, cp.pool);
+
+        let p : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
+        let meta : Pool.ICPSwapMetadataResult =
+          try { await p.metadata() }
+          catch e { #err(#InternalError(Error.message(e))) };
+
+        switch (meta) {
+          case (#ok(m)) {
+            let t0 = Principal.fromText(m.token0.address);
+            let t1 = Principal.fromText(m.token1.address);
+            set_pool_tokens({ pool = cp.pool; token0 = t0; token1 = t1 });
+            if (not register_harvest_token(t0)) {
+              List.add(errors, "registry full; could not register " # m.token0.address);
+            };
+            if (not register_harvest_token(t1)) {
+              List.add(errors, "registry full; could not register " # m.token1.address);
+            };
+          };
+          case (#err(e)) {
+            List.add(errors, "metadata failed for " # Principal.toText(cp.pool) # ": " # debug_show(e));
+          };
+        };
+      };
+    };
+
+    log_msg("refresh_pool_tokens completed: tokens=" # debug_show(claim_tokens) #
+      " pool_tokens=" # debug_show(claim_pool_tokens) #
+      " errors=" # debug_show(List.toArray(errors)));
+
+    List.toArray(errors);
+  };
+
+  // Timer entry point for the post-upgrade backfill (postupgrade cannot await).
+  private func refresh_pool_tokens_job() : async () {
+    ignore await refresh_pool_tokens();
+  };
+
+  // Re-read every enrolled pool's token pair. Safety-admin gated. Repairs the
+  // maps after an upgrade or if a pool was enrolled before they existed.
+  // Returns the per-pool errors, empty when clean. Moves no funds.
+  public shared ({ caller }) func refresh_lp_pool_tokens() : async [Text] {
+
+    log_msg("refresh_lp_pool_tokens called by " # Principal.toText(caller));
+
+    assert is_safety_admin(caller);
+
+    await refresh_pool_tokens();
   };
 
   // Remove a position from automatic fee harvesting. Safety-admin gated.
@@ -1584,19 +1712,94 @@ persistent actor {
     claim_positions;
   };
 
+  // Manually register a ledger for sweeping. Safety-admin gated. Useful to drain
+  // a residual balance of a token whose last position has been removed.
+  // Idempotent. Traps if the registry is full.
+  //
+  // Cannot misdirect funds: the registry chooses WHICH ledgers are swept, never
+  // WHERE they go — that is rll_dest_for, which no caller can influence.
+  public shared ({ caller }) func add_lp_harvest_token(ledger : Principal) : async [Principal] {
+
+    log_msg("add_lp_harvest_token called by " # Principal.toText(caller) #
+      " with arguments: ledger: " # Principal.toText(ledger));
+
+    assert is_safety_admin(caller);
+
+    if (not register_harvest_token(ledger)) {
+      let err_msg = "add_lp_harvest_token ERROR: harvest token registry is full (max " #
+        debug_show(max_harvest_tokens) # ")";
+      log_msg(err_msg);
+      Runtime.trap(err_msg);
+    };
+
+    log_msg("add_lp_harvest_token: registry is now " # debug_show(claim_tokens));
+
+    claim_tokens;
+  };
+
+  // Prune a ledger from the sweep registry. Safety-admin gated. A no-op if it is
+  // not registered. Any balance of that token stays in the harvest subaccount
+  // until it is re-registered.
+  public shared ({ caller }) func remove_lp_harvest_token(ledger : Principal) : async [Principal] {
+
+    log_msg("remove_lp_harvest_token called by " # Principal.toText(caller) #
+      " with arguments: ledger: " # Principal.toText(ledger));
+
+    assert is_safety_admin(caller);
+
+    claim_tokens := Array.filter<Principal>(claim_tokens, func(t) {
+      not Principal.equal(t, ledger)
+    });
+
+    log_msg("remove_lp_harvest_token: registry is now " # debug_show(claim_tokens));
+
+    claim_tokens;
+  };
+
+  // Clear a stuck harvest guard. Safety-admin gated. Moves no funds.
+  //
+  // do_harvest sets `harvest_running` at entry and clears it at its single normal
+  // return. Motoko has no try/finally, so an enrolled pool that accepts
+  // claimToSubaccount and never replies leaves the guard set and wedges
+  // harvesting. Previously only an upgrade could clear it (the flag is transient);
+  // this lever avoids a redeploy for what is an operational hazard, not an attack.
+  //
+  // Resetting the guard while a cycle is genuinely still in flight lets two
+  // cycles run concurrently. That is harmless in practice: a re-claim of the same
+  // position collects ~0 (ICPSwap fee claims are accrual-based, so there is
+  // nothing left to claim so soon after the first), and forward_token reads the
+  // real subaccount balance rather than a tracked delta, so overlapping forwards
+  // cannot double-spend. Reach for this only when a cycle is actually stuck, not
+  // as a routine unstick-and-retry.
+  public shared ({ caller }) func reset_harvest_running() : async Bool {
+
+    log_msg("reset_harvest_running called by " # Principal.toText(caller) #
+      " (guard was " # debug_show(harvest_running) # ")");
+
+    assert is_safety_admin(caller);
+
+    let was_running = harvest_running;
+    harvest_running := false;
+
+    was_running;
+  };
+
   // The positions currently enrolled in automatic fee harvesting.
   public query func get_lp_fee_claim_positions() : async [T.ClaimPosition] {
     claim_positions;
   };
 
-  // The current harvest schedule and enrolled positions.
+  // The current harvest schedule, token registry and enrolled positions.
   public query func get_lp_fee_claim_config() : async T.ClaimConfigView {
     {
       active = claim_active;
       cadence_seconds = claim_cadence_seconds;
       min_icp = claim_min_icp;
       min_sneed = claim_min_sneed;
+      min_fee_multiple = claim_min_fee_multiple;
       harvest_account = harvest_account;
+      tokens = claim_tokens;
+      pool_tokens = claim_pool_tokens;
       positions = claim_positions;
     };
   };
@@ -1836,6 +2039,18 @@ persistent actor {
     if (claim_active and claim_cadence_seconds >= min_cadence_seconds) {
       claim_timer_id := ?Timer.recurringTimer<system>(#seconds claim_cadence_seconds, harvest_timer_job);
     };
+
+    // Seed the two ledgers whose destinations are compile-time constants, so a
+    // transient metadata() failure in the backfill below can never leave the
+    // forward path with an empty registry. register_harvest_token is idempotent.
+    ignore register_harvest_token(Principal.fromText(icp_ledger_id));
+    ignore register_harvest_token(Principal.fromText(sneed_ledger_id));
+
+    // The token pair map and harvest token registry post-date the first enrolled
+    // positions, so backfill them from each pool's metadata. postupgrade cannot
+    // await, hence the zero-delay one-shot. Idempotent and cheap (one metadata
+    // call per distinct enrolled pool), so it simply runs on every upgrade.
+    ignore Timer.setTimer<system>(#seconds 0, refresh_pool_tokens_job);
 
   };
 

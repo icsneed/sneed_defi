@@ -95,36 +95,58 @@ type ClaimPosition = {
     position_id : Nat;
 };
 
-// Result of one harvest cycle. Logged and returned so operators can see
-// exactly what moved. `errors` lists per-step failures; empty when clean.
-//
-// ICPSwap's claim auto-withdraws fees to the harvest subaccount out of band, so
-// a cycle FORWARDS whatever has already settled in that subaccount, then CLAIMS
-// new fees (forwarded by the delayed job / next cycle). The harvest-subaccount
-// balance is the source of truth; there is no in-canister forward queue.
-type HarvestSummary = {
-    positions_seen : Nat;         // enrolled positions considered this cycle
-    positions_harvested : Nat;    // positions where claimToSubaccount succeeded
-    claimed_icp : Nat;            // ICP claimed this cycle (settles async, forwarded later)
-    claimed_sneed : Nat;          // SNEED claimed this cycle (settles async, forwarded later)
-    forwarded_icp : Nat;          // ICP sent to the ICP vector this cycle (net of fee)
-    forwarded_sneed : Nat;        // SNEED sent to the SNEED vector this cycle (net of fee)
-    harvest_balance_icp : Nat;    // ICP seen in the harvest subaccount during the forward phase
-    harvest_balance_sneed : Nat;  // SNEED seen in the harvest subaccount during the forward phase
-    icp_forward_tx : ?TxIndex;    // ledger tx index of the ICP forward, if it happened
-    sneed_forward_tx : ?TxIndex;  // ledger tx index of the SNEED forward, if it happened
-    errors : [Text];
+// One ledger's share of a harvest cycle. Used for the per-ledger claimed tally.
+type TokenAmount = {
+    ledger : Principal;
+    amount : Balance;
 };
 
-// Read-only view of the current harvest schedule, harvest account and positions.
-// `harvest_account` is exposed so operators can read its live ICP/SNEED balance
+// Outcome of one forward attempt: what the harvest subaccount held for this
+// ledger, and how much (net of the ledger fee) actually moved to `dest`.
+type ForwardResult = {
+    ledger       : Principal;
+    dest         : Account;
+    balance_seen : Balance;
+    forwarded    : Balance;   // 0 when the balance was below the forward gate
+    tx           : ?TxIndex;
+};
+
+// A pool's token pair, captured once at enrollment so the harvest loop never
+// needs to call the pool's metadata(). Kept in its own stable var rather than
+// as fields on ClaimPosition: extending an existing stable record's shape fails
+// `moc --stable-compatible` (M0170) and the upgrade would be rejected.
+type PoolTokens = {
+    pool   : Principal;
+    token0 : Principal;
+    token1 : Principal;
+};
+
+// Result of one harvest cycle. Logged and returned so operators can see exactly
+// what was claimed. `errors` lists per-step failures; empty when clean.
+//
+// A cycle only CLAIMS: ICPSwap's claim auto-withdraws fees to the harvest
+// subaccount out of band, so do_harvest schedules a delayed forward_only_job to
+// route the proceeds once they settle. Forward outcomes are therefore reported
+// by that job as [ForwardResult] in the log, not here.
+type HarvestSummary = {
+    positions_seen      : Nat;           // enrolled positions considered this cycle
+    positions_harvested : Nat;           // positions where claimToSubaccount succeeded
+    claimed             : [TokenAmount]; // per-ledger claimed this cycle (settles async)
+    errors              : [Text];
+};
+
+// Read-only view of the current harvest schedule, harvest account, registry and
+// positions. `harvest_account` is exposed so operators can read its live balances
 // directly on the ledgers (a query cannot make inter-canister balance calls).
 type ClaimConfigView = {
-    active : Bool;
-    cadence_seconds : Nat;
-    min_icp : Balance;
-    min_sneed : Balance;
-    harvest_account : Account;
-    positions : [ClaimPosition];
+    active           : Bool;
+    cadence_seconds  : Nat;
+    min_icp          : Balance;
+    min_sneed        : Balance;
+    min_fee_multiple : Nat;          // forward gate for tokens other than ICP/SNEED
+    harvest_account  : Account;
+    tokens           : [Principal];  // ledgers the forward phase sweeps
+    pool_tokens      : [PoolTokens]; // pool -> token pair, captured at enrollment
+    positions        : [ClaimPosition];
 };
 

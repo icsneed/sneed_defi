@@ -1550,11 +1550,17 @@ persistent actor {
   };
 
   // Enroll a position in automatic fee harvesting. Safety-admin gated.
-  // Idempotent: adding an already-enrolled (pool, position_id) is a no-op.
   //
-  // This is the ONLY place pool metadata is read. Capturing the token pair here
-  // keeps it off the per-cycle harvest path and means harvesting no longer
-  // depends on a pool's metadata() being readable.
+  // Pool metadata is read here, on the enrollment path, which keeps it off the
+  // per-cycle harvest path and means harvesting no longer depends on a pool's
+  // metadata() being readable. refresh_pool_tokens re-reads it too, but only for
+  // repair/backfill (postupgrade, or the operator lever) — this call is the one
+  // that establishes a position's token pair in the first place.
+  //
+  // Re-enrolling an already-enrolled (pool, position_id) leaves the position
+  // list unchanged, but it is NOT a no-op: it still makes the metadata() call
+  // above, rewrites that pool's entry in claim_pool_tokens, may register a
+  // newly-observed token, and can trap if the registry is full.
   //
   // Nothing is mutated before the metadata call returns, and a trap rolls back
   // every change made since that await — so a failed enroll leaves no partial
@@ -1757,6 +1763,14 @@ persistent actor {
   // claimToSubaccount and never replies leaves the guard set and wedges
   // harvesting. Previously only an upgrade could clear it (the flag is transient);
   // this lever avoids a redeploy for what is an operational hazard, not an attack.
+  //
+  // Resetting the guard while a cycle is genuinely still in flight lets two
+  // cycles run concurrently. That is harmless in practice: a re-claim of the same
+  // position collects ~0 (ICPSwap fee claims are accrual-based, so there is
+  // nothing left to claim so soon after the first), and forward_token reads the
+  // real subaccount balance rather than a tracked delta, so overlapping forwards
+  // cannot double-spend. Reach for this only when a cycle is actually stuck, not
+  // as a routine unstick-and-retry.
   public shared ({ caller }) func reset_harvest_running() : async Bool {
 
     log_msg("reset_harvest_running called by " # Principal.toText(caller) #
@@ -2025,6 +2039,12 @@ persistent actor {
     if (claim_active and claim_cadence_seconds >= min_cadence_seconds) {
       claim_timer_id := ?Timer.recurringTimer<system>(#seconds claim_cadence_seconds, harvest_timer_job);
     };
+
+    // Seed the two ledgers whose destinations are compile-time constants, so a
+    // transient metadata() failure in the backfill below can never leave the
+    // forward path with an empty registry. register_harvest_token is idempotent.
+    ignore register_harvest_token(Principal.fromText(icp_ledger_id));
+    ignore register_harvest_token(Principal.fromText(sneed_ledger_id));
 
     // The token pair map and harvest token registry post-date the first enrolled
     // positions, so backfill them from each pool's metadata. postupgrade cannot

@@ -1540,6 +1540,14 @@ persistent actor {
 
   // Enroll a position in automatic fee harvesting. Safety-admin gated.
   // Idempotent: adding an already-enrolled (pool, position_id) is a no-op.
+  //
+  // This is the ONLY place pool metadata is read. Capturing the token pair here
+  // keeps it off the per-cycle harvest path and means harvesting no longer
+  // depends on a pool's metadata() being readable.
+  //
+  // Nothing is mutated before the metadata call returns, and a trap rolls back
+  // every change made since that await — so a failed enroll leaves no partial
+  // state behind.
   public shared ({ caller }) func add_lp_fee_claim_position(
     pool : Principal,
     position_id : Nat)
@@ -1551,18 +1559,117 @@ persistent actor {
 
     assert is_safety_admin(caller);
 
-    let exists = Array.find<T.ClaimPosition>(claim_positions, func(p) {
-      Principal.equal(p.pool, pool) and p.position_id == position_id
+    let p : Pool.ICPSwapPool = actor (Principal.toText(pool));
+    let meta : Pool.ICPSwapMetadataResult =
+      try { await p.metadata() }
+      catch e { #err(#InternalError(Error.message(e))) };
+
+    // Principal.fromText traps on a malformed address. That is the right outcome
+    // here: a pool that cannot name its own tokens must not be enrolled.
+    let (token0, token1) = switch (meta) {
+      case (#ok(m)) {
+        (Principal.fromText(m.token0.address), Principal.fromText(m.token1.address));
+      };
+      case (#err(e)) {
+        let err_msg = "add_lp_fee_claim_position ERROR: metadata failed for " #
+          Principal.toText(pool) # ": " # debug_show(e);
+        log_msg(err_msg);
+        Runtime.trap(err_msg);
+      };
+    };
+
+    // Refuse to enroll a position whose proceeds could never be swept.
+    if (not register_harvest_token(token0) or not register_harvest_token(token1)) {
+      let err_msg = "add_lp_fee_claim_position ERROR: harvest token registry is full (max " #
+        debug_show(max_harvest_tokens) # "); prune with remove_lp_harvest_token before enrolling " #
+        Principal.toText(pool);
+      log_msg(err_msg);
+      Runtime.trap(err_msg);
+    };
+
+    set_pool_tokens({ pool = pool; token0 = token0; token1 = token1 });
+
+    let exists = Array.find<T.ClaimPosition>(claim_positions, func(p2) {
+      Principal.equal(p2.pool, pool) and p2.position_id == position_id
     }) != null;
 
     if (not exists) {
       claim_positions := Array.concat<T.ClaimPosition>(
         claim_positions, [{ pool = pool; position_id = position_id }]);
-      log_msg("add_lp_fee_claim_position: enrolled " # Principal.toText(pool) #
-        " position " # debug_show(position_id));
     };
 
+    log_msg("add_lp_fee_claim_position: enrolled " # Principal.toText(pool) #
+      " position " # debug_show(position_id) #
+      " with tokens " # Principal.toText(token0) # " / " # Principal.toText(token1));
+
     claim_positions;
+  };
+
+  // Re-read metadata() for every enrolled pool and repopulate the token pair map
+  // and the harvest token registry. Internal core, shared by the public lever and
+  // the post-upgrade backfill.
+  //
+  // Best-effort: a pool whose metadata() call fails is skipped with a recorded
+  // error rather than aborting the rest, because this runs unattended from
+  // postupgrade. One narrow exception: Principal.fromText traps on a malformed
+  // address, so a pool that REPLIES SUCCESSFULLY with an invalid principal string
+  // will abort the run (pools already processed stay committed). That is
+  // unreachable for a real ICPSwap pool; the remedy is remove_lp_fee_claim_position.
+  private func refresh_pool_tokens() : async [Text] {
+    let errors = List.empty<Text>();
+    let seen = List.empty<Principal>();
+
+    for (cp in claim_positions.vals()) {
+      // Several positions can share a pool; read each pool's metadata once.
+      if (List.find<Principal>(seen, func(x) { Principal.equal(x, cp.pool) }) == null) {
+        List.add(seen, cp.pool);
+
+        let p : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
+        let meta : Pool.ICPSwapMetadataResult =
+          try { await p.metadata() }
+          catch e { #err(#InternalError(Error.message(e))) };
+
+        switch (meta) {
+          case (#ok(m)) {
+            let t0 = Principal.fromText(m.token0.address);
+            let t1 = Principal.fromText(m.token1.address);
+            set_pool_tokens({ pool = cp.pool; token0 = t0; token1 = t1 });
+            if (not register_harvest_token(t0)) {
+              List.add(errors, "registry full; could not register " # m.token0.address);
+            };
+            if (not register_harvest_token(t1)) {
+              List.add(errors, "registry full; could not register " # m.token1.address);
+            };
+          };
+          case (#err(e)) {
+            List.add(errors, "metadata failed for " # Principal.toText(cp.pool) # ": " # debug_show(e));
+          };
+        };
+      };
+    };
+
+    log_msg("refresh_pool_tokens completed: tokens=" # debug_show(claim_tokens) #
+      " pool_tokens=" # debug_show(claim_pool_tokens) #
+      " errors=" # debug_show(List.toArray(errors)));
+
+    List.toArray(errors);
+  };
+
+  // Timer entry point for the post-upgrade backfill (postupgrade cannot await).
+  private func refresh_pool_tokens_job() : async () {
+    ignore await refresh_pool_tokens();
+  };
+
+  // Re-read every enrolled pool's token pair. Safety-admin gated. Repairs the
+  // maps after an upgrade or if a pool was enrolled before they existed.
+  // Returns the per-pool errors, empty when clean. Moves no funds.
+  public shared ({ caller }) func refresh_lp_pool_tokens() : async [Text] {
+
+    log_msg("refresh_lp_pool_tokens called by " # Principal.toText(caller));
+
+    assert is_safety_admin(caller);
+
+    await refresh_pool_tokens();
   };
 
   // Remove a position from automatic fee harvesting. Safety-admin gated.
@@ -1840,6 +1947,12 @@ persistent actor {
     if (claim_active and claim_cadence_seconds >= min_cadence_seconds) {
       claim_timer_id := ?Timer.recurringTimer<system>(#seconds claim_cadence_seconds, harvest_timer_job);
     };
+
+    // The token pair map and harvest token registry post-date the first enrolled
+    // positions, so backfill them from each pool's metadata. postupgrade cannot
+    // await, hence the zero-delay one-shot. Idempotent and cheap (one metadata
+    // call per distinct enrolled pool), so it simply runs on every upgrade.
+    ignore Timer.setTimer<system>(#seconds 0, refresh_pool_tokens_job);
 
   };
 

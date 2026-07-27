@@ -9,6 +9,7 @@ import List "mo:core/List";
 import Time "mo:core/Time";
 import Principal "mo:core/Principal";
 import Error "mo:core/Error";
+import Runtime "mo:core/Runtime";
 import Timer "mo:core/Timer";
 
 import T "Types";
@@ -80,6 +81,17 @@ persistent actor {
   transient let rll_icp_dest : T.Account = { owner = rll_vector_owner; subaccount = ?rll_icp_subaccount };
   transient let rll_sneed_dest : T.Account = { owner = rll_vector_owner; subaccount = ?rll_sneed_subaccount };
 
+  // Destination for every harvested token that is not ICP or SNEED. The RLL
+  // distribution canister tracks its own per-ledger holdings and distributes
+  // from them, so it receives tokens in its DEFAULT account.
+  transient let rll_distribution_dest : T.Account =
+    { owner = Principal.fromText(rll_distribution_canister_id); subaccount = null };
+
+  // Upper bound on the harvest token registry. The forward loop makes up to three
+  // sequential inter-canister calls per registered ledger (icrc1_fee,
+  // icrc1_balance_of, icrc1_transfer), so this caps how long a forward pass runs.
+  transient let max_harvest_tokens : Nat = 32;
+
   // Dedicated destination for auto-withdrawn LP fees. Derived from THIS canister's
   // principal via PrincipalToSubaccount (see below), so it is injective and can
   // never collide with a user subaccount (that would require caller == this
@@ -108,6 +120,25 @@ persistent actor {
   var claim_min_sneed : Nat = 0;                 // per-token minimum before SNEED is forwarded
   var claim_active : Bool = false;               // whether a recurring harvest is scheduled
 
+  // Ledgers the forward phase sweeps. Populated at enrollment from the enrolled
+  // pool's metadata(). Deliberately NOT pruned when a position is removed, so a
+  // residual balance of that token still gets forwarded. Capped at
+  // max_harvest_tokens.
+  var claim_tokens : [Principal] = [];
+
+  // pool -> (token0 ledger, token1 ledger), captured at enrollment. Lets the
+  // claim loop attribute amount0/amount1 to ledgers with no inter-canister call.
+  // Bounded by the number of enrolled pools, so it needs no cap of its own.
+  // NOTE: this is a separate stable var rather than two extra fields on
+  // ClaimPosition because extending an existing stable record fails
+  // `moc --stable-compatible` (M0170) and the upgrade would be rejected.
+  var claim_pool_tokens : [T.PoolTokens] = [];
+
+  // Forward threshold for tokens other than ICP/SNEED, as a multiple of the
+  // token's own ledger fee. Scale-free: correct for any decimals or price
+  // without per-token configuration. Rejected as 0 by set_lp_fee_claim_schedule.
+  var claim_min_fee_multiple : Nat = 10;
+
   // Transient: timer ids do not survive upgrades; re-armed in postupgrade.
   transient var claim_timer_id : ?Nat = null;
 
@@ -118,6 +149,67 @@ persistent actor {
   // so an overlap merely no-ops the second transfer.) do_harvest is trap-free, so
   // this guard is always reset; an upgrade also clears it.
   transient var harvest_running : Bool = false;
+
+  // The complete routing table for harvested tokens. Keyed on ledger id alone:
+  // a token's origin pool is irrelevant, so ICP and SNEED harvested from ANY
+  // pair reach the same vectors the SNEED/ICP pair always used. No caller input
+  // reaches this function, so no caller can change where funds go.
+  private func rll_dest_for(ledger : Text) : T.Account {
+    if (ledger == icp_ledger_id) { rll_icp_dest }
+    else if (ledger == sneed_ledger_id) { rll_sneed_dest }
+    else { rll_distribution_dest };
+  };
+
+  // Smallest balance worth forwarding for a ledger. ICP and SNEED keep their
+  // operator-set absolute minimums; everything else uses the fee multiple.
+  private func min_forward_for(ledger : Text, fee : Nat) : Nat {
+    if (ledger == icp_ledger_id) { claim_min_icp }
+    else if (ledger == sneed_ledger_id) { claim_min_sneed }
+    else { fee * claim_min_fee_multiple };
+  };
+
+  // Add a ledger to the harvest token registry. Idempotent. Returns false ONLY
+  // when the registry is full and the ledger is therefore not registered.
+  private func register_harvest_token(ledger : Principal) : Bool {
+    if (Array.find<Principal>(claim_tokens, func(t) { Principal.equal(t, ledger) }) != null) {
+      return true;
+    };
+    if (claim_tokens.size() >= max_harvest_tokens) { return false };
+    claim_tokens := Array.concat<Principal>(claim_tokens, [ledger]);
+    true;
+  };
+
+  // The token pair recorded for a pool at enrollment, if any.
+  private func pool_tokens_for(pool : Principal) : ?T.PoolTokens {
+    Array.find<T.PoolTokens>(claim_pool_tokens, func(pt) { Principal.equal(pt.pool, pool) });
+  };
+
+  // Record (or replace) a pool's token pair.
+  private func set_pool_tokens(pt : T.PoolTokens) {
+    claim_pool_tokens := Array.concat<T.PoolTokens>(
+      Array.filter<T.PoolTokens>(claim_pool_tokens, func(e) { not Principal.equal(e.pool, pt.pool) }),
+      [pt]);
+  };
+
+  // Accumulate `amount` against `ledger` in a per-ledger tally, summing repeats.
+  // A zero amount adds no entry, so the tally lists only ledgers that moved.
+  private func tally_add(tally : List.List<T.TokenAmount>, ledger : Principal, amount : Nat) {
+    if (amount == 0) { return };
+    var i = 0;
+    while (i < List.size(tally)) {
+      switch (List.get(tally, i)) {
+        case (?e) {
+          if (Principal.equal(e.ledger, ledger)) {
+            List.put(tally, i, { ledger = ledger; amount = e.amount + amount });
+            return;
+          };
+        };
+        case null {};
+      };
+      i += 1;
+    };
+    List.add(tally, { ledger = ledger; amount = amount });
+  };
 
   // Deploy the specified amount of ICRC1 tokens from the DeFi canistyer (using the null subaccount).
   // Can only be called by the Sneed DAO governance canister (via approved proposal)!

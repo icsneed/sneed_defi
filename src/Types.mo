@@ -135,15 +135,18 @@ type HarvestSummary = {
     errors              : [Text];
 };
 
-// Read-only view of the current harvest schedule, harvest account and positions.
-// `harvest_account` is exposed so operators can read its live ICP/SNEED balance
+// Read-only view of the current harvest schedule, harvest account, registry and
+// positions. `harvest_account` is exposed so operators can read its live balances
 // directly on the ledgers (a query cannot make inter-canister balance calls).
 type ClaimConfigView = {
-    active : Bool;
-    cadence_seconds : Nat;
-    min_icp : Balance;
-    min_sneed : Balance;
-    harvest_account : Account;
-    positions : [ClaimPosition];
+    active           : Bool;
+    cadence_seconds  : Nat;
+    min_icp          : Balance;
+    min_sneed        : Balance;
+    min_fee_multiple : Nat;          // forward gate for tokens other than ICP/SNEED
+    harvest_account  : Account;
+    tokens           : [Principal];  // ledgers the forward phase sweeps
+    pool_tokens      : [PoolTokens]; // pool -> token pair, captured at enrollment
+    positions        : [ClaimPosition];
 };
 

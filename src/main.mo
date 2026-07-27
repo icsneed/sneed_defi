@@ -1475,13 +1475,15 @@ persistent actor {
   public shared ({ caller }) func set_lp_fee_claim_schedule(
     cadence_seconds : Nat,        // how often to harvest, in seconds (>= 60)
     min_icp : T.Balance,          // minimum accumulated ICP before it is forwarded
-    min_sneed : T.Balance)        // minimum accumulated SNEED before it is forwarded
+    min_sneed : T.Balance,        // minimum accumulated SNEED before it is forwarded
+    min_fee_multiple : Nat)       // forward gate for other tokens, as a multiple of their ledger fee (>= 1)
     : async T.HarvestSummary {
 
     log_msg("set_lp_fee_claim_schedule called by " # Principal.toText(caller) #
       " with arguments: cadence_seconds: " # debug_show(cadence_seconds) #
       ", min_icp: " # debug_show(min_icp) #
-      ", min_sneed: " # debug_show(min_sneed));
+      ", min_sneed: " # debug_show(min_sneed) #
+      ", min_fee_multiple: " # debug_show(min_fee_multiple));
 
     if (not is_safety_admin(caller)) {
       let err_msg = "set_lp_fee_claim_schedule ERROR: Not authorized (Was called by " #
@@ -1497,6 +1499,14 @@ persistent actor {
       return err_summary(err_msg);
     };
 
+    // Zero would silently disable the dust guard for every non-ICP/SNEED token.
+    // An operator who genuinely wants fee-only gating passes 1.
+    if (min_fee_multiple < 1) {
+      let err_msg = "set_lp_fee_claim_schedule ERROR: min_fee_multiple must be at least 1";
+      log_msg(err_msg);
+      return err_summary(err_msg);
+    };
+
     // Stop any previously configured timer.
     switch (claim_timer_id) {
       case (?id) { Timer.cancelTimer(id); claim_timer_id := null };
@@ -1508,6 +1518,7 @@ persistent actor {
     claim_cadence_seconds := cadence_seconds;
     claim_min_icp := min_icp;
     claim_min_sneed := min_sneed;
+    claim_min_fee_multiple := min_fee_multiple;
     claim_active := true;
 
     // Run one harvest now, then arm the recurring timer.
@@ -1764,14 +1775,17 @@ persistent actor {
     claim_positions;
   };
 
-  // The current harvest schedule and enrolled positions.
+  // The current harvest schedule, token registry and enrolled positions.
   public query func get_lp_fee_claim_config() : async T.ClaimConfigView {
     {
       active = claim_active;
       cadence_seconds = claim_cadence_seconds;
       min_icp = claim_min_icp;
       min_sneed = claim_min_sneed;
+      min_fee_multiple = claim_min_fee_multiple;
       harvest_account = harvest_account;
+      tokens = claim_tokens;
+      pool_tokens = claim_pool_tokens;
       positions = claim_positions;
     };
   };

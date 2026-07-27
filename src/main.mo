@@ -1695,6 +1695,70 @@ persistent actor {
     claim_positions;
   };
 
+  // Manually register a ledger for sweeping. Safety-admin gated. Useful to drain
+  // a residual balance of a token whose last position has been removed.
+  // Idempotent. Traps if the registry is full.
+  //
+  // Cannot misdirect funds: the registry chooses WHICH ledgers are swept, never
+  // WHERE they go — that is rll_dest_for, which no caller can influence.
+  public shared ({ caller }) func add_lp_harvest_token(ledger : Principal) : async [Principal] {
+
+    log_msg("add_lp_harvest_token called by " # Principal.toText(caller) #
+      " with arguments: ledger: " # Principal.toText(ledger));
+
+    assert is_safety_admin(caller);
+
+    if (not register_harvest_token(ledger)) {
+      let err_msg = "add_lp_harvest_token ERROR: harvest token registry is full (max " #
+        debug_show(max_harvest_tokens) # ")";
+      log_msg(err_msg);
+      Runtime.trap(err_msg);
+    };
+
+    log_msg("add_lp_harvest_token: registry is now " # debug_show(claim_tokens));
+
+    claim_tokens;
+  };
+
+  // Prune a ledger from the sweep registry. Safety-admin gated. A no-op if it is
+  // not registered. Any balance of that token stays in the harvest subaccount
+  // until it is re-registered.
+  public shared ({ caller }) func remove_lp_harvest_token(ledger : Principal) : async [Principal] {
+
+    log_msg("remove_lp_harvest_token called by " # Principal.toText(caller) #
+      " with arguments: ledger: " # Principal.toText(ledger));
+
+    assert is_safety_admin(caller);
+
+    claim_tokens := Array.filter<Principal>(claim_tokens, func(t) {
+      not Principal.equal(t, ledger)
+    });
+
+    log_msg("remove_lp_harvest_token: registry is now " # debug_show(claim_tokens));
+
+    claim_tokens;
+  };
+
+  // Clear a stuck harvest guard. Safety-admin gated. Moves no funds.
+  //
+  // do_harvest sets `harvest_running` at entry and clears it at its single normal
+  // return. Motoko has no try/finally, so an enrolled pool that accepts
+  // claimToSubaccount and never replies leaves the guard set and wedges
+  // harvesting. Previously only an upgrade could clear it (the flag is transient);
+  // this lever avoids a redeploy for what is an operational hazard, not an attack.
+  public shared ({ caller }) func reset_harvest_running() : async Bool {
+
+    log_msg("reset_harvest_running called by " # Principal.toText(caller) #
+      " (guard was " # debug_show(harvest_running) # ")");
+
+    assert is_safety_admin(caller);
+
+    let was_running = harvest_running;
+    harvest_running := false;
+
+    was_running;
+  };
+
   // The positions currently enrolled in automatic fee harvesting.
   public query func get_lp_fee_claim_positions() : async [T.ClaimPosition] {
     claim_positions;

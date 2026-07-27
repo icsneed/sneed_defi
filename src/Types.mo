@@ -95,6 +95,32 @@ type ClaimPosition = {
     position_id : Nat;
 };
 
+// One ledger's share of a harvest cycle. Used for the per-ledger claimed tally.
+type TokenAmount = {
+    ledger : Principal;
+    amount : Balance;
+};
+
+// Outcome of one forward attempt: what the harvest subaccount held for this
+// ledger, and how much (net of the ledger fee) actually moved to `dest`.
+type ForwardResult = {
+    ledger       : Principal;
+    dest         : Account;
+    balance_seen : Balance;
+    forwarded    : Balance;   // 0 when the balance was below the forward gate
+    tx           : ?TxIndex;
+};
+
+// A pool's token pair, captured once at enrollment so the harvest loop never
+// needs to call the pool's metadata(). Kept in its own stable var rather than
+// as fields on ClaimPosition: extending an existing stable record's shape fails
+// `moc --stable-compatible` (M0170) and the upgrade would be rejected.
+type PoolTokens = {
+    pool   : Principal;
+    token0 : Principal;
+    token1 : Principal;
+};
+
 // Result of one harvest cycle. Logged and returned so operators can see
 // exactly what moved. `errors` lists per-step failures; empty when clean.
 //

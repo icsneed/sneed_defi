@@ -1266,19 +1266,24 @@ persistent actor {
     };
   };
 
-  // Drain the harvest subaccount for one token to its RLL vector. Trap-free and
-  // idempotent: reads the REAL subaccount balance every call, so a delayed job
-  // overlapping the next cycle's forward can never double-spend (the later run
-  // sees ~0). Forwards only when the balance clears `min_amount` and exceeds the
-  // ledger fee. Returns (forwarded_net, tx, balance_seen).
+  // Drain the harvest subaccount for one token to its RLL destination. Trap-free
+  // and idempotent: reads the REAL subaccount balance every call, so a delayed
+  // job overlapping a later pass can never double-spend (the later run sees ~0).
+  // Forwards only when the balance clears `min_amount` and exceeds the ledger fee.
+  //
+  // This is the ONLY code that spends from the harvest subaccount. Note
+  // `from_subaccount = ?harvest_subaccount`: the canister's own holdings live in
+  // the DEFAULT subaccount and are unreachable from here.
   private func forward_token(
-    ledger : T.ICRC1Ledger,
+    ledger_id : Principal,
     dest : T.Account,
     fee : Nat,
     min_amount : Nat,
-    label_ : Text,
     errors : List.List<Text>)
-    : async (Nat, ?Nat, Nat) {
+    : async T.ForwardResult {
+
+    let label_ = Principal.toText(ledger_id);
+    let ledger : T.ICRC1Ledger = actor (label_);
 
     let bal : ?Nat =
       try { ?(await ledger.icrc1_balance_of(harvest_account)) }
@@ -1286,7 +1291,9 @@ persistent actor {
 
     switch (bal) {
       case (?b) {
-        if (b < min_amount or b <= fee) { return (0, null, b) };
+        if (b < min_amount or b <= fee) {
+          return { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = 0; tx = null };
+        };
         let send_amount = b - fee : Nat;
         let res : T.TransferResult =
           try {
@@ -1300,53 +1307,55 @@ persistent actor {
             })
           } catch e { #Err(#GenericError({ error_code = 1; message = Error.message(e) })) };
         switch (res) {
-          case (#Ok(tx)) { (send_amount, ?tx, b) };
-          case (#Err(e)) { List.add(errors, "forward(" # label_ # ") failed: " # debug_show(e)); (0, null, b) };
+          case (#Ok(tx)) {
+            { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = send_amount; tx = ?tx };
+          };
+          case (#Err(e)) {
+            List.add(errors, "forward(" # label_ # ") failed: " # debug_show(e));
+            { ledger = ledger_id; dest = dest; balance_seen = b; forwarded = 0; tx = null };
+          };
         };
       };
-      case null { (0, null, 0) };
+      case null {
+        { ledger = ledger_id; dest = dest; balance_seen = 0; forwarded = 0; tx = null };
+      };
     };
+  };
+
+  // Sweep every registered token from the harvest subaccount to its destination.
+  // Trap-free: a ledger whose fee cannot be read is skipped this pass and its
+  // balance carries to a later one.
+  private func forward_all(errors : List.List<Text>) : async [T.ForwardResult] {
+    let results = List.empty<T.ForwardResult>();
+
+    for (ledger_id in claim_tokens.vals()) {
+      let lid = Principal.toText(ledger_id);
+      let ledger : T.ICRC1Ledger = actor (lid);
+
+      let fee : ?Nat =
+        try { ?(await ledger.icrc1_fee()) }
+        catch e { List.add(errors, "icrc1_fee(" # lid # ") failed: " # Error.message(e)); null };
+
+      switch (fee) {
+        case (?f) {
+          let r = await forward_token(ledger_id, rll_dest_for(lid), f, min_forward_for(lid, f), errors);
+          List.add(results, r);
+        };
+        case null {};
+      };
+    };
+
+    List.toArray(results);
   };
 
   // Delayed one-shot (scheduled at the end of do_harvest). After ICPSwap has had
   // `settle_delay_seconds` to process this cycle's claim auto-withdraws, drain the
-  // harvest subaccount to the RLL vectors. Trap-free; no reentrancy guard needed
-  // because forward_token reads the real balance (idempotent under overlap).
+  // harvest subaccount to the RLL destinations. Trap-free; no reentrancy guard
+  // needed because forward_token reads the real balance (idempotent under overlap).
   private func forward_only_job() : async () {
     let errors = List.empty<Text>();
-    let icp_ledger : T.ICRC1Ledger = actor (icp_ledger_id);
-    let sneed_ledger : T.ICRC1Ledger = actor (sneed_ledger_id);
-
-    var forwarded_icp : Nat = 0;
-    var forwarded_sneed : Nat = 0;
-    var icp_tx : ?Nat = null;
-    var sneed_tx : ?Nat = null;
-
-    let icp_fee : ?Nat =
-      try { ?(await icp_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(ICP) failed: " # Error.message(e)); null };
-    switch (icp_fee) {
-      case (?f) {
-        let (sent, tx, _bal) = await forward_token(icp_ledger, rll_icp_dest, f, claim_min_icp, "ICP", errors);
-        forwarded_icp := sent; icp_tx := tx;
-      };
-      case null {};
-    };
-
-    let sneed_fee : ?Nat =
-      try { ?(await sneed_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(SNEED) failed: " # Error.message(e)); null };
-    switch (sneed_fee) {
-      case (?f) {
-        let (sent, tx, _bal) = await forward_token(sneed_ledger, rll_sneed_dest, f, claim_min_sneed, "SNEED", errors);
-        forwarded_sneed := sent; sneed_tx := tx;
-      };
-      case null {};
-    };
-
-    log_msg("delayed forward completed: forwarded_icp=" # debug_show(forwarded_icp) #
-      " forwarded_sneed=" # debug_show(forwarded_sneed) #
-      " icp_tx=" # debug_show(icp_tx) # " sneed_tx=" # debug_show(sneed_tx) #
+    let results = await forward_all(errors);
+    log_msg("delayed forward completed: results=" # debug_show(results) #
       " errors=" # debug_show(List.toArray(errors)));
   };
 

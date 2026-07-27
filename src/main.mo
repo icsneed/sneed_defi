@@ -99,20 +99,6 @@ persistent actor {
   // sub-minute cadence buys nothing and risks hammering the pool/ledgers.
   transient let min_cadence_seconds = 60;
 
-  // Pools approved for automatic fee harvesting. Enrollment (and every harvest
-  // cycle, as defense in depth) is restricted to these canisters. This is the
-  // primary guard against a safety_admin enrolling an attacker-controlled
-  // canister and having its fabricated tokens claimed into the harvest subaccount
-  // and swept into the RLL vectors: fees can only ever be claimed from a pool on
-  // this compile-time list. To start,
-  // only the SNEED/ICP pool is approved.
-  transient let approved_lp_pools = ["osyzs-xiaaa-aaaag-qc76q-cai"];
-
-  private func is_approved_lp_pool(pool : Principal) : Bool {
-    let p = Principal.toText(pool);
-    Array.find<Text>(approved_lp_pools, func(a) { a == p }) != null;
-  };
-
   // === LP fee harvesting: state ===
   //
   // Stable (persistent actor => non-transient vars persist across upgrades):
@@ -1169,11 +1155,12 @@ persistent actor {
   // ============================================================================
   // LP fee harvesting -> RLL routing
   //
-  // On a timer, claim SNEED/ICP fees from enrolled ICPSwap positions this
-  // canister owns and forward each token to its hardcoded Sneed RLL vector.
-  // Funds can ONLY ever reach the two compile-time RLL destinations, so the
-  // schedule/position controls are safe to expose to safety_admins: no caller
-  // input can change where fees go, only which pools are harvested and how often.
+  // On a timer, claim fees from enrolled ICPSwap positions this canister owns and
+  // forward each token to its compile-time destination: ICP and SNEED to their
+  // Sneed RLL vectors, every other ICRC-1 token to the RLL distribution canister.
+  // Funds can ONLY ever reach those three destinations, so the schedule/position
+  // controls are safe to expose to safety_admins: no caller input can change
+  // where fees go, only which pools are harvested and how often.
   // ============================================================================
 
   // Build a HarvestSummary that carries only an error (used to reject a call
@@ -1363,14 +1350,6 @@ persistent actor {
     label nextpos for (cp in claim_positions.vals()) {
       positions_seen += 1;
 
-      // Defense in depth: only harvest approved pools. Enrollment already enforces
-      // this, but claim_positions is stable state that can predate the allowlist.
-      if (not is_approved_lp_pool(cp.pool)) {
-        List.add(errors, "position " # debug_show(cp.position_id) # " on " #
-          Principal.toText(cp.pool) # " is not an approved pool; skipped");
-        continue nextpos;
-      };
-
       let pool : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
 
       // Identify which side is ICP and which is SNEED by EXACT ledger match. Skip
@@ -1545,11 +1524,6 @@ persistent actor {
       ", position_id: " # debug_show(position_id));
 
     assert is_safety_admin(caller);
-
-    // Only approved pools may be enrolled (see approved_lp_pools). This is the
-    // primary guard preventing a safety_admin from routing ok64's funds through
-    // an attacker-controlled canister; do_harvest re-checks as defense in depth.
-    assert is_approved_lp_pool(pool);
 
     let exists = Array.find<T.ClaimPosition>(claim_positions, func(p) {
       Principal.equal(p.pool, pool) and p.position_id == position_id

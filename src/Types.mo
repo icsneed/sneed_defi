@@ -121,25 +121,18 @@ type PoolTokens = {
     token1 : Principal;
 };
 
-// Result of one harvest cycle. Logged and returned so operators can see
-// exactly what moved. `errors` lists per-step failures; empty when clean.
+// Result of one harvest cycle. Logged and returned so operators can see exactly
+// what was claimed. `errors` lists per-step failures; empty when clean.
 //
-// ICPSwap's claim auto-withdraws fees to the harvest subaccount out of band, so
-// a cycle FORWARDS whatever has already settled in that subaccount, then CLAIMS
-// new fees (forwarded by the delayed job / next cycle). The harvest-subaccount
-// balance is the source of truth; there is no in-canister forward queue.
+// A cycle only CLAIMS: ICPSwap's claim auto-withdraws fees to the harvest
+// subaccount out of band, so do_harvest schedules a delayed forward_only_job to
+// route the proceeds once they settle. Forward outcomes are therefore reported
+// by that job as [ForwardResult] in the log, not here.
 type HarvestSummary = {
-    positions_seen : Nat;         // enrolled positions considered this cycle
-    positions_harvested : Nat;    // positions where claimToSubaccount succeeded
-    claimed_icp : Nat;            // ICP claimed this cycle (settles async, forwarded later)
-    claimed_sneed : Nat;          // SNEED claimed this cycle (settles async, forwarded later)
-    forwarded_icp : Nat;          // ICP sent to the ICP vector this cycle (net of fee)
-    forwarded_sneed : Nat;        // SNEED sent to the SNEED vector this cycle (net of fee)
-    harvest_balance_icp : Nat;    // ICP seen in the harvest subaccount during the forward phase
-    harvest_balance_sneed : Nat;  // SNEED seen in the harvest subaccount during the forward phase
-    icp_forward_tx : ?TxIndex;    // ledger tx index of the ICP forward, if it happened
-    sneed_forward_tx : ?TxIndex;  // ledger tx index of the SNEED forward, if it happened
-    errors : [Text];
+    positions_seen      : Nat;           // enrolled positions considered this cycle
+    positions_harvested : Nat;           // positions where claimToSubaccount succeeded
+    claimed             : [TokenAmount]; // per-ledger claimed this cycle (settles async)
+    errors              : [Text];
 };
 
 // Read-only view of the current harvest schedule, harvest account and positions.

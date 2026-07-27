@@ -1261,14 +1261,7 @@ persistent actor {
     {
       positions_seen = 0;
       positions_harvested = 0;
-      claimed_icp = 0;
-      claimed_sneed = 0;
-      forwarded_icp = 0;
-      forwarded_sneed = 0;
-      harvest_balance_icp = 0;
-      harvest_balance_sneed = 0;
-      icp_forward_tx = null;
-      sneed_forward_tx = null;
+      claimed = [];
       errors = [msg];
     };
   };
@@ -1357,10 +1350,9 @@ persistent actor {
       " errors=" # debug_show(List.toArray(errors)));
   };
 
-  // Core harvest logic. Best-effort and trap-free: one failing position or
-  // ledger call never aborts the cycle; every failure is recorded in the
-  // summary. No caller gate (internal): reached only via the safety-admin
-  // public wrapper or the recurring timer.
+  // Core harvest logic. Best-effort and trap-free: one failing position never
+  // aborts the cycle; every failure is recorded in the summary. No caller gate
+  // (internal): reached only via the safety-admin public wrapper or the timer.
   //
   // INVARIANT — do_harvest MUST remain trap-free. The transient `harvest_running`
   // guard is set at entry and cleared only at the single normal return point;
@@ -1370,13 +1362,13 @@ persistent actor {
   //
   // ICPSwap's claim AUTO-WITHDRAWS the claimed fees to the target subaccount and
   // settles OUT OF BAND (it enqueues the transfer and returns before the tokens
-  // arrive), so claim and forward are decoupled across cycles via the harvest
-  // subaccount balance:
-  //   1. FORWARD whatever has already settled in the harvest subaccount to the
-  //      RLL vectors (gated by the per-token minimums).
-  //   2. CLAIM this cycle's fees into the harvest subaccount (claimToSubaccount).
-  //   3. SCHEDULE a one-shot delayed forward so this cycle's proceeds are routed
-  //      once ICPSwap has settled them.
+  // arrive), so a cycle only claims:
+  //   1. CLAIM each position's fees into the harvest subaccount.
+  //   2. SCHEDULE a one-shot delayed forward to route them once settled.
+  // The delayed job drains the FULL subaccount balance per registered token, so
+  // anything a previous cycle left behind is swept by a later one.
+  //
+  // No pool metadata is read here: the token pair was captured at enrollment.
   private func do_harvest() : async T.HarvestSummary {
 
     // Reentrancy guard: never overlap two cycles.
@@ -1387,99 +1379,40 @@ persistent actor {
     harvest_running := true;
 
     let errors = List.empty<Text>();
+    let claimed = List.empty<T.TokenAmount>();
 
-    let icp_ledger : T.ICRC1Ledger = actor (icp_ledger_id);
-    let sneed_ledger : T.ICRC1Ledger = actor (sneed_ledger_id);
-
-    // Ledger fees (best-effort). A token whose fee is unreadable is not forwarded
-    // this cycle; its subaccount balance carries to a later run.
-    let icp_fee : ?Nat =
-      try { ?(await icp_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(ICP) failed: " # Error.message(e)); null };
-    let sneed_fee : ?Nat =
-      try { ?(await sneed_ledger.icrc1_fee()) }
-      catch e { List.add(errors, "icrc1_fee(SNEED) failed: " # Error.message(e)); null };
-
-    // === 1. Forward phase: drain the harvest subaccount to the RLL vectors. ===
-    // Consumes proceeds that have already settled (earlier cycles' / delayed
-    // job's claims). Gated by the per-token minimums.
-    var forwarded_icp : Nat = 0;
-    var forwarded_sneed : Nat = 0;
-    var icp_forward_tx : ?Nat = null;
-    var sneed_forward_tx : ?Nat = null;
-    var harvest_balance_icp : Nat = 0;
-    var harvest_balance_sneed : Nat = 0;
-
-    switch (icp_fee) {
-      case (?f) {
-        let (sent, tx, bal) =
-          await forward_token(icp_ledger, rll_icp_dest, f, claim_min_icp, "ICP", errors);
-        forwarded_icp := sent;
-        icp_forward_tx := tx;
-        harvest_balance_icp := bal;
-      };
-      case null {};
-    };
-    switch (sneed_fee) {
-      case (?f) {
-        let (sent, tx, bal) =
-          await forward_token(sneed_ledger, rll_sneed_dest, f, claim_min_sneed, "SNEED", errors);
-        forwarded_sneed := sent;
-        sneed_forward_tx := tx;
-        harvest_balance_sneed := bal;
-      };
-      case null {};
-    };
-
-    // === 2. Claim phase: claim each position's fees into the harvest subaccount. ===
-    // ICPSwap's claim auto-withdraws the claimed amount to the given subaccount,
-    // settling out of band; the delayed forward (scheduled below) routes it.
     var positions_seen : Nat = 0;
     var positions_harvested : Nat = 0;
-    var claimed_icp : Nat = 0;
-    var claimed_sneed : Nat = 0;
 
-    label nextpos for (cp in claim_positions.vals()) {
+    for (cp in claim_positions.vals()) {
       positions_seen += 1;
 
       let pool : Pool.ICPSwapPool = actor (Principal.toText(cp.pool));
 
-      // Identify which side is ICP and which is SNEED by EXACT ledger match. Skip
-      // anything that is not exactly a SNEED/ICP pool (never claim an unrecognised
-      // pool's tokens into the harvest subaccount). Also used to map the claimed
-      // amounts onto the ICP/SNEED sides for the summary.
-      let meta : Pool.ICPSwapMetadataResult =
-        try { await pool.metadata() }
-        catch e { #err(#InternalError(Error.message(e))) };
-      let icp_is_token0 = switch (meta) {
-        case (#ok(m)) {
-          if (m.token0.address == icp_ledger_id and m.token1.address == sneed_ledger_id) { true }
-          else if (m.token0.address == sneed_ledger_id and m.token1.address == icp_ledger_id) { false }
-          else {
-            List.add(errors, "position " # debug_show(cp.position_id) # " on " #
-              Principal.toText(cp.pool) # " is not a SNEED/ICP pool; skipped");
-            continue nextpos;
-          };
-        };
-        case (#err(e)) {
-          List.add(errors, "metadata failed for " # Principal.toText(cp.pool) #
-            " position " # debug_show(cp.position_id) # ": " # debug_show(e));
-          continue nextpos;
-        };
-      };
-
       // Claim accrued fees to the harvest subaccount. ICPSwap auto-withdraws them
-      // out of band; forwarded by the delayed job / next cycle.
+      // out of band; the delayed job / a later cycle forwards them.
       let claim_res : Pool.ICPSwapAmountsResult =
         try { await pool.claimToSubaccount({ positionId = cp.position_id; subaccount = harvest_subaccount }) }
         catch e { #err(#InternalError(Error.message(e))) };
+
       switch (claim_res) {
         case (#ok(a)) {
           positions_harvested += 1;
-          let icp_amt   = if (icp_is_token0) { a.amount0 } else { a.amount1 };
-          let sneed_amt = if (icp_is_token0) { a.amount1 } else { a.amount0 };
-          claimed_icp += icp_amt;
-          claimed_sneed += sneed_amt;
+          // Attribute the amounts using the pair captured at enrollment. A miss
+          // should be unreachable (enrollment always records one, and postupgrade
+          // backfills), so it is reported rather than silently ignored. The claim
+          // still counts: the proceeds are safely in the harvest subaccount.
+          switch (pool_tokens_for(cp.pool)) {
+            case (?pt) {
+              tally_add(claimed, pt.token0, a.amount0);
+              tally_add(claimed, pt.token1, a.amount1);
+            };
+            case null {
+              List.add(errors, "no token mapping for pool " # Principal.toText(cp.pool) #
+                "; claimed amounts not attributed and its tokens may be unregistered." #
+                " Run refresh_lp_pool_tokens().");
+            };
+          };
         };
         case (#err(e)) {
           List.add(errors, "claim failed for " # Principal.toText(cp.pool) #
@@ -1488,22 +1421,14 @@ persistent actor {
       };
     };
 
-    // === 3. Schedule the delayed forward for this cycle's freshly-claimed fees. ===
-    // One-shot; not persisted across upgrades (the next cycle's forward phase
-    // catches any straggler).
+    // Schedule the delayed forward for this cycle's freshly-claimed fees.
+    // One-shot; not persisted across upgrades (a later cycle catches stragglers).
     ignore Timer.setTimer<system>(#seconds settle_delay_seconds, forward_only_job);
 
     let summary : T.HarvestSummary = {
       positions_seen = positions_seen;
       positions_harvested = positions_harvested;
-      claimed_icp = claimed_icp;
-      claimed_sneed = claimed_sneed;
-      forwarded_icp = forwarded_icp;
-      forwarded_sneed = forwarded_sneed;
-      harvest_balance_icp = harvest_balance_icp;
-      harvest_balance_sneed = harvest_balance_sneed;
-      icp_forward_tx = icp_forward_tx;
-      sneed_forward_tx = sneed_forward_tx;
+      claimed = List.toArray(claimed);
       errors = List.toArray(errors);
     };
 

@@ -63,6 +63,10 @@ persistent actor {
   // against these by EXACT address, so only genuine SNEED/ICP fees are moved.
   transient let icp_ledger_id = "ryjl3-tyaaa-aaaaa-aaaba-cai";
   transient let sneed_ledger_id = "hvgxa-wqaaa-aaaaq-aacia-cai";
+  
+  // Where to send icrc1 tokens for distribution that arent SNEED or ICP.
+  // SNEED and ICP should go to respective vector addresses.
+  transient let rll_distribution_canister_id = "lvc4n-7aaaa-aaaam-adm6a-cai";
 
   // Sneed "RLL" neuron-pool-vector destinations. These are the ONLY places the
   // harvester can send funds, and they are compile-time constants: no caller
